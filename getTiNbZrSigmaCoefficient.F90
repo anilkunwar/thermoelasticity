@@ -36,7 +36,7 @@
     END IF
 
     ! read in Temperature Coefficient of Resistance
-    alphas = GetConstReal( material, 'Exp Coeff A Solid TiAlV', GotIt)
+    alphas = GetConstReal( material, 'Exp Coeff Solid TiNbZr', GotIt)
     IF(.NOT. GotIt) THEN
     CALL Fatal('getThermalStressCoefficient', 'slope of thermal expansivity-temperature curve solid not found')
     END IF
@@ -48,7 +48,7 @@
     END IF
     
     ! read in Temperature Coefficient of Resistance
-    alphal = GetConstReal( material, 'Exp Coeff A Liquid TiNbZr', GotIt)
+    alphal = GetConstReal( material, 'Exp Coeff Liquid TiNbZr', GotIt)
     IF(.NOT. GotIt) THEN
     CALL Fatal('getThermalStressCoefficient', 'slope of thermal expansivity-temperature curve Liquid TiNbZr not found')
     END IF
