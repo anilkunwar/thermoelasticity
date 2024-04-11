@@ -1,4 +1,4 @@
-# thermoelasticity
+# THERMOELASTICITY
 # Material properties 
 DESCRIPTION will be provided 
 
