@@ -4,10 +4,12 @@
     ! Coefficient of thermal stress as a function of temperature
     ! sigma_T = E*coefficient*(T-T_ref)
     ! coeffcient = switch*alpha
-    ! where alpha_i = a_0i + a_1i*T
+    ! where alpha_i = a_0i + a_1i*T + a_2i*T**2
+    ! a_2s=2.72E-11 K^{-3}, a_1s=4.0956E-8 K^{-2} and a_0s=1.6631E-5 K^{-1}
     ! The switch is 0 for liquid phase and 1 for solid phase
     ! E = 139 GPa for Ti3Au
-    ! References
+    ! References: Reddy et al, 1983, Journal of Materials Science Letters
+    !  https://link.springer.com/article/10.1007/BF00735567
     !-----------------------------------------------------
     FUNCTION getThermalStressCoefficient( model, n, temp ) RESULT(thsigmacoeff)
     ! modules needed
@@ -20,7 +22,7 @@
 
     ! variables needed inside function
     REAL(KIND=dp) :: refSolThExp, refLiqThExp,refTemp, &
-    alphas, alphal 
+    alphas, alphal, betas, betal 
     Logical :: GotIt
     TYPE(ValueList_t), POINTER :: material
 
@@ -37,9 +39,15 @@
     END IF
 
     ! read in Temperature Coefficient of Resistance
-    alphas = GetConstReal( material, 'Exp Coeff Solid TiNbZr', GotIt)
+    alphas = GetConstReal( material, 'Exp Coeff As Solid Ti3Au', GotIt)
     IF(.NOT. GotIt) THEN
-    CALL Fatal('getThermalStressCoefficient', 'slope of thermal expansivity-temperature curve solid not found')
+    CALL Fatal('getThermalStressCoefficient', 'Coefficient of T2 term of thermal expansivity-temperature curve solid not found')
+    END IF
+
+    ! read in Temperature Coefficient of Resistance
+    betas = GetConstReal( material, 'Exp Coeff Bs Solid Ti3Au', GotIt)
+    IF(.NOT. GotIt) THEN
+    CALL Fatal('getThermalStressCoefficient', 'Slope of thermal expansivity-temperature curve solid not found')
     END IF
     
     ! read in reference conductivity at reference temperature
@@ -52,6 +60,12 @@
     alphal = GetConstReal( material, 'Exp Coeff Liquid Ti3Au', GotIt)
     IF(.NOT. GotIt) THEN
     CALL Fatal('getThermalStressCoefficient', 'slope of thermal expansivity-temperature curve Liquid Ti3Au not found')
+    END IF
+
+    ! read in Temperature Coefficient of Resistance
+    betal = GetConstReal( material, 'Exp Coeff Bs Liquid Ti3Au', GotIt)
+    IF(.NOT. GotIt) THEN
+    CALL Fatal('getThermalStressCoefficient', 'Slope of thermal expansivity-temperature curve solid not found')
     END IF
     
     
@@ -75,7 +89,7 @@
     !thsigmacoeff = 0*(refLiqThExp + alphal*((tscaler)*temp))
     thsigmacoeff = 0 ! whatever the value of refLiqThExp and alphal, the switch will render the coefficient zero
     ELSE
-    thsigmacoeff = refSolThExp + alphas*((tscaler)*temp) ! the switch is 1 here
+    thsigmacoeff = refSolThExp + betas*((tscaler)*temp)+ alphas*((tscaler)*temp)**2 ! the switch is 1 here
     END IF
 
     END FUNCTION getThermalStressCoefficient
