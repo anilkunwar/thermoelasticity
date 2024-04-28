@@ -6,8 +6,9 @@
     ! coeffcient = switch*alpha
     ! where alpha_i = a_0i + a_1i*T
     ! The switch is 0 for liquid phase and 1 for solid phase
-    ! E = 79 GPa for Au
-    ! References
+    ! E = 62 GPa for Au
+    ! References: Lee et al., 2009, Current Applied Physics
+    ! https://www.sciencedirect.com/science/article/pii/S1567173908001958
     !-----------------------------------------------------
     FUNCTION getThermalStressCoefficient( model, n, temp ) RESULT(thsigmacoeff)
     ! modules needed
