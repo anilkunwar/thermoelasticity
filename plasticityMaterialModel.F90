@@ -18,7 +18,7 @@
     REAL(KIND=dp) :: stress, elast
 
     ! variables needed inside function
-    REAL(KIND=dp) :: refElast, yieldsigma   &
+    REAL(KIND=dp) :: refElast, yieldsigma,   &
     strengthcoeff, mcoeff
     Logical :: GotIt
     TYPE(ValueList_t), POINTER :: material
