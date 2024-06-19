@@ -2,7 +2,7 @@
     ! Written By: Anil Kunwar (Original 2015-03-13) (Modification 2021-11-16)
     ! material property user defined function for ELMER:
     ! Thermal conductivity of Ti0.8455Nb0.0765Zr0.0779 fitted as a function of temperature
-    ! (kth_tinbzr)solid = As*(T-298.15)^2 + Bs*(T-298.15) + Cs, where A = -1.66755674e-06 W K/m and B = 4.80727332e-03 W/m and C = 2.629e+01 W/mK
+    ! (kth_tinbzr)solid = As*(T)^2 + Bs*(T) + Cs, where A = -9.12e-07 W K/m^3 and B = 4.34e-03 W/m K^2 and C = 18.0 W/mK (298.0 K < T < 1973.0 K)
     ! X.P. Zhang  et al. J. Mater. Sci. (2005), Vol. 40:4911-4916
     ! https://pubs.aip.org/avs/jvb/article/29/6/061803/104835/Laser-nitriding-of-niobium-for-application-to
     ! https://www.sciencedirect.com/science/article/pii/0022311595001107
@@ -10,7 +10,7 @@
     ! https://periodictable.com/Elements/040/data.html (Value of C, E)
     ! https://periodictable.com/Elements/041/data.html (Value of C, E)
     ! https://link.springer.com/content/pdf/10.1007/s10853-005-0418-0.pdf
-    ! (kth_tinbzr)liquid = Al*(T)^2 + Bl*T + Cl, where Al = 1.95E-07 W/m K^3 ,Bl = 1.55E-02 W/m K^2 and Cl = 5.73 W/m K
+    ! (kth_tinbzr)liquid = Al*(T)^2 + Bl*T + Cl, where Al = 1.95E-07 W/m K^3 ,Bl = 1.55E-02 W/m K^2 and Cl = 5.73 W/m K (1973.0 K < T < 2500 K)
     ! https://www.sciencedirect.com/science/article/pii/S0167732220373803
     !-----------------------------------------------------
     FUNCTION getThermalConductivity( model, n, temp ) RESULT(thcondt)
