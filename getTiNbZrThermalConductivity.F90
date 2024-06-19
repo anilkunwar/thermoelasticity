@@ -3,6 +3,7 @@
     ! material property user defined function for ELMER:
     ! Thermal conductivity of Ti0.8455Nb0.0765Zr0.0779 fitted as a function of temperature
     ! (kth_tinbzr)solid = As*(T)^2 + Bs*(T) + Cs, where A = -9.12e-07 W K/m^3 and B = 4.34e-03 W/m K^2 and C = 18.0 W/mK (298.0 K < T < 1973.0 K)
+    ! Comparison with that of pure Ti: (kth_ti)solid = A*T^2 + B*T + C, where A = -1.66755674e-06 W K/m and B = 4.80727332e-03 W/m and C = 1.47783620e+01 W/mK
     ! X.P. Zhang  et al. J. Mater. Sci. (2005), Vol. 40:4911-4916
     ! https://pubs.aip.org/avs/jvb/article/29/6/061803/104835/Laser-nitriding-of-niobium-for-application-to
     ! https://www.sciencedirect.com/science/article/pii/0022311595001107
