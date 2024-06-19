@@ -1,6 +1,8 @@
     !-----------------------------------------------------
     ! Written By: Anil Kunwar (Original 2015-03-13) (Modification 2021-11-16)
     ! material property user defined function for ELMER:
+    ! Thermal conductivity of Ti fitted as a function of temperature
+    ! (kth_ti)solid = As*(T)^2 + Bs*(T) + Cs, where A = -9.12e-07 W K/m^3 and B = 4.34e-03 W/m K^2 and C = 18.0 W/mK (298.0 K < T < 1973.0 K)
     ! Thermal conductivity of Ti0.8455Nb0.0765Zr0.0779 fitted as a function of temperature
     ! (kth_tinbzr)solid = As*(T)^2 + Bs*(T) + Cs, where A = -9.12e-07 W K/m^3 and B = 4.34e-03 W/m K^2 and C = 18.0 W/mK (298.0 K < T < 1973.0 K)
     ! Comparison with that of pure Ti: (kth_ti)solid = A*T^2 + B*T + C, where A = -1.66755674e-06 W K/m and B = 4.80727332e-03 W/m and C = 1.47783620e+01 W/mK
