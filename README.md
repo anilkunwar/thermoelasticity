@@ -1,6 +1,8 @@
 # THERMOELASTICITY
+
 # Folder fem:   
 The folder fem consists of the additional files and libraries that are required for performing finite element analysis in Elmer software.
+The plasticity material property is incorporates in the FEM in addition to the elasticity property.
 
 # Folder vae:   
 The folder contains information about 
