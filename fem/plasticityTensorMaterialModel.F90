@@ -7,6 +7,7 @@
     ! where, strength coefficient K_H = 381.08 MPa and strain hardening coefficient = n = 0.103; m = 1/n = 9.7087
     ! Reference: Natesan et al., Materials 2019.
     ! https://www.mdpi.com/1996-1944/12/18/3033
+    ! How to write a UDF for a tensor in terms of its elements
     ! Reference: https://github.com/anilkunwar/elmerfem/blob/devel/fem/tests/AnisotropicThermalConductivity/GetThermalConductivityTensor.F90
     !-----------------------------------------------------
     FUNCTION getPlasticityTensor( model, n, stress ) RESULT(elast)
