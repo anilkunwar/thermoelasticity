@@ -4,12 +4,15 @@ import numpy as np
 from pathlib import Path
 import plotly.graph_objects as go
 
-st.title("VTU File Reader from GitHub-Like Directory")
+st.title("VTU File Reader")
 
 # Assume the directory is mounted or local in Streamlit Cloud (upload or git clone in app)
 # For GitHub, you can clone the repo in the app if needed, but for simplicity, assume it's local
+# --------------------------------------------------------------
+# 2. DATA_ROOT – relative to this script
+# --------------------------------------------------------------
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
-DATA_ROOT = SCRIPT_DIR / "laser_simulations"
+DEFAULT_FOLDER = "laser_simulations"
 
 if not DATA_ROOT.exists():
     st.error("laser_simulations directory not found. Please ensure it's available.")
