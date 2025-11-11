@@ -1,3 +1,4 @@
 xvfb
 libgl1-mesa-glx
 libglu1-mesa
+libgl1-mesa-dri  # Optional: Faster software rendering
