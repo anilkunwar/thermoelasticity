@@ -1,12 +1,4 @@
 streamlit
-pandas
-numpy
-torch
 stpyvista
 pyvista
-vtk-osmesa
-meshio
-matplotlib
-tqdm
-panel
-pyvirtualdisplay
+vtk-osmesa  # Mesa-based VTK
