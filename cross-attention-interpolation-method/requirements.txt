@@ -7,3 +7,12 @@ torch
 pandas
 numpy
 tqdm
+seaborn
+kaleido
+transformers
+langchain
+langchain-openai
+langchain-core
+langchain-community
+openai
+openllm
