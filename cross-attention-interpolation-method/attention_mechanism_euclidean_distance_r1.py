@@ -395,7 +395,7 @@ else:
 
             def _interpolate_fields(self, sims_data, weights, target_P, target_V):
                 # Find common time grid (e.g., union of all times, sorted unique)
-                all_times = np.unique(np.concatenate([data['times'].numpy() for data in sims_data.values()['temporal_data']]))
+                all_times = np.unique(np.concatenate([data['temporal_data']['times'].numpy() for data in sims_data.values()]))
                 common_times = torch.tensor(all_times, dtype=torch.float32)
 
                 # Interpolate each sim to common times
@@ -407,9 +407,7 @@ else:
                         if field == 'times':
                             continue
                         # Interp along time dim (axis=0)
-                        if tensor.ndim == 1:  # scalars like times
-                            continue
-                        elif tensor.ndim == 2:  # [T, N]
+                        if tensor.ndim == 2:  # [T, N]
                             f = interp1d(orig_times, tensor.numpy(), axis=0, kind='linear', fill_value='extrapolate')
                             interp_data[field] = torch.tensor(f(common_times.numpy()))
                         elif tensor.ndim == 3:  # [T, N, D]
@@ -461,7 +459,10 @@ else:
             interpolator = LaserAttentionInterpolator()
             interp_solution = interpolator.forward(sims_data, params_list, target_P, target_V)
             st.success(f"Interpolated for P={target_P}W, V={target_V}mm/s!")
-            st.download_button("📥 Download Interpolated .pt", io.BytesIO(torch.save(interp_solution, io.BytesIO()).getvalue()), f"Interp_P{target_P}_V{target_V}_temporal.pt")
+            buf = io.BytesIO()
+            torch.save(interp_solution, buf)
+            buf.seek(0)
+            st.download_button("📥 Download Interpolated .pt", buf.getvalue(), f"Interp_P{target_P}_V{target_V}_temporal.pt")
 # --------------------------------------------------------------
 # Temporal Visualization
 # --------------------------------------------------------------
