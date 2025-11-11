@@ -118,13 +118,21 @@ if selected_names:
 
     # Extract data
     points = mesh.points
-    values = mesh.point_data[temp_field]
+    raw_values = mesh.point_data[temp_field]
+
+    # Ensure numpy array
+    values = np.array(raw_values)
+
+    # If vector field, take magnitude for coloring
+    if values.ndim > 1 and values.shape[1] > 1:
+        values = np.linalg.norm(values, axis=1)
 
     # Downsample for visualization if large
     if points.shape[0] > 200000:
         idx = np.random.choice(points.shape[0], 200000, replace=False)
         points = points[idx]
         values = values[idx]
+
 
     # Create 3D scatter plot with Plotly
     fig = go.Figure(
