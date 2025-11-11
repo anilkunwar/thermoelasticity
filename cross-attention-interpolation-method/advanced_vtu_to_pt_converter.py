@@ -4,12 +4,10 @@
 import os
 import re
 import glob
-import io
 import torch
 import numpy as np
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
 from pathlib import Path
 from tqdm import tqdm
 
@@ -33,7 +31,12 @@ os.environ["PYVISTA_DISABLE_FOONATHAN_MEMORY"] = "1"
 
 import pyvista as pv
 
-# Try to start a virtual framebuffer if available
+# No Xvfb or OpenGL initialization — just pure off-screen
+pv.OFF_SCREEN = True
+print("[INFO] Running in fully headless OSMesa mode.")
+
+
+# Try to start virtual display (if available)
 try:
     pv.start_xvfb()
     print("[INFO] Xvfb virtual display started.")
@@ -79,8 +82,9 @@ def find_simulations(root: Path):
         if p.is_dir() and pattern.match(p.name):
             vtu_files = list(p.glob("*.vtu"))
             if vtu_files:
-                P = float(pattern.match(p.name).group(1))
-                V = float(pattern.match(p.name).group(2))
+                match = pattern.match(p.name)
+                P = float(match.group(1))
+                V = float(match.group(2))
                 sims.append({
                     "name": p.name,
                     "path": p,
@@ -101,11 +105,11 @@ cols = st.columns(3)
 for i, sim in enumerate(simulations):
     with cols[i % 3]:
         st.markdown(
-            f"**{sim['name']}**  \nP = `{sim['P']}` W  \nV = `{sim['V']}` mm/s  \nFiles: `{sim['files']}`"
+            f"**{sim['name']}**  \nP = `{sim['P']}` W  \nV = `{sim['V']}` mm/s  \nFiles: `{sim['files']}`"
         )
 
 # --------------------------------------------------------------
-# 4. Select & Preview (robust headless version)
+# 4. Select & 3-D preview
 # --------------------------------------------------------------
 selected_names = st.multiselect(
     "Select simulations to convert",
@@ -120,80 +124,37 @@ if selected_names:
 
     @st.cache_data
     def load_preview_mesh(p):
-        try:
-            return pv.read(p)
-        except Exception:
-            try:
-                import meshio
-                m = meshio.read(str(p))
-                class SimpleMesh:
-                    pass
-                sm = SimpleMesh()
-                sm.points = m.points
-                sm.point_data = getattr(m, "point_data", {})
-                sm.field_data = getattr(m, "field_data", {})
-                return sm
-            except Exception as e:
-                st.error(f"Unable to read preview mesh: {e}")
-                return None
+        return pv.read(p)
 
     mesh = load_preview_mesh(vtu_sample)
-    if mesh is None:
-        st.warning("Preview unavailable (could not load mesh).")
-    else:
-        # Pick a temperature-like field
-        temp_field = None
-        try:
-            keys = list(mesh.point_data.keys())
-        except Exception:
-            keys = []
-        for k in keys:
-            if "temp" in k.lower() or k.lower() in ("t", "temperature"):
-                temp_field = k
-                break
-        if temp_field is None and keys:
-            temp_field = keys[0]
 
-        preview_rendered = False
-        try:
-            plotter = pv.Plotter(off_screen=True, window_size=[800, 600])
-            plotter.add_mesh(mesh, scalars=temp_field, cmap="hot", show_scalar_bar=True)
-            plotter.set_background("white")
-            plotter.camera_position = "xy"
-            png = plotter.screenshot(transparent_background=True, return_img=True)
-            plotter.close()
-            st.image(png, use_column_width=True)
-            preview_rendered = True
-        except Exception as e_plot:
-            st.warning("Full 3-D preview unavailable (headless rendering). Showing 2-D projection instead.")
-            st.write(f"_Preview fallback reason: {str(e_plot)}_")
+    # Pick a temperature-like field
+    temp_field = None
+    for k in mesh.point_data.keys():
+        if "temp" in k.lower() or k.lower() in ("t", "temperature"):
+            temp_field = k
+            break
+    if temp_field is None and mesh.point_data:
+        temp_field = list(mesh.point_data.keys())[0]
 
-        if not preview_rendered:
-            try:
-                pts = np.asarray(mesh.points)
-                if temp_field and (temp_field in getattr(mesh, "point_data", {})):
-                    vals = np.asarray(mesh.point_data[temp_field])
-                    if vals.ndim > 1:
-                        vals = np.linalg.norm(vals, axis=1)
-                else:
-                    vals = pts[:, 2]
+    # Headless plotter (safe)
+    plotter = pv.Plotter(off_screen=True, window_size=[800, 600])
+    plotter.add_mesh(mesh, scalars=temp_field, cmap="hot", show_scalar_bar=True)
+    plotter.set_background("white")
+    
+    # --- REFINED CAMERA POSITION ---
+    plotter.camera_position = "iso"  # Use isometric view for better 3D depth
+    plotter.show_axes()             # Show axes (X, Y, Z) for orientation
+    # --- END REFINEMENT ---
 
-                fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
-                sc = ax.scatter(pts[:, 0], pts[:, 1], c=vals, s=6, cmap="hot", marker=".", rasterized=True)
-                ax.set_aspect("equal", adjustable="box")
-                ax.set_title(f"{vtu_sample.name} — 2-D projection (XY)")
-                ax.set_xlabel("x")
-                ax.set_ylabel("y")
-                plt.colorbar(sc, ax=ax, label=(temp_field or "z"))
-                plt.tight_layout()
-
-                buf = io.BytesIO()
-                fig.savefig(buf, format="png", dpi=150)
-                buf.seek(0)
-                st.image(buf, use_column_width=True)
-                plt.close(fig)
-            except Exception as e2:
-                st.error(f"Fallback preview also failed: {e2}")
+    try:
+        # Generate the PNG image data
+        png = plotter.screenshot(transparent_background=True, return_img=True)
+        st.image(png, use_column_width=True)
+    except Exception as e:
+        st.warning(f"Preview failed (headless rendering issue): {e}")
+    finally:
+        plotter.close()
 
 # --------------------------------------------------------------
 # 5. Convert (optional split)
@@ -217,6 +178,7 @@ if st.button("Convert to .pt", type="primary"):
         vtu_files = sorted(sim["path"].glob("*.vtu"))
         frames = []
 
+        # Convert VTU files to Pandas DataFrames
         for vtu_path in tqdm(vtu_files, desc=name, leave=False):
             mesh = pv.read(vtu_path)
             time_val = mesh.field_data.get("TimeValue", [np.nan])[0]
@@ -231,11 +193,13 @@ if st.button("Convert to .pt", type="primary"):
                 "y": points[:, 1],
                 "z": points[:, 2],
             }
+            # Extract point data arrays
             for field_name in mesh.point_data:
                 arr = mesh.point_data[field_name]
                 if arr.ndim == 1:
                     base_data[field_name] = arr
                 else:
+                    # Handle vector fields by splitting components
                     for i in range(arr.shape[1]):
                         base_data[f"{field_name}_{i}"] = arr[:, i]
 
@@ -245,14 +209,16 @@ if st.button("Convert to .pt", type="primary"):
         full_df = pd.concat(frames, ignore_index=True)
         numeric_cols = full_df.select_dtypes(include=[np.number]).columns
 
+        # Convert Pandas DataFrames to PyTorch Tensors
         tensors = {
             col: torch.from_numpy(full_df[col].values.astype(np.float32))
             for col in numeric_cols
         }
         metadata = {"simulation": name, "P_W": float(sim["P"]), "Vscan_mm_s": float(sim["V"])}
 
-        # ---------- Split ----------
+        # ---------- Split and Save Tensors ----------
         N = next(iter(tensors.values())).shape[0]
+        # Estimate row size in bytes (assuming float32 = 4 bytes)
         row_bytes = sum(t[0:1].numel() * 4 for t in tensors.values())
         rows_per_part = max(1, MAX_BYTES // row_bytes)
         n_parts = (N + rows_per_part - 1) // rows_per_part
@@ -263,7 +229,11 @@ if st.button("Convert to .pt", type="primary"):
         for i in range(n_parts):
             start = i * rows_per_part
             end = min(start + rows_per_part, N)
+            
+            # Slice tensors for the current part
             part = {k: v[start:end] for k, v in tensors.items()}
+            
+            # Add metadata
             part.update(metadata)
             part["part_index"] = i
             part["total_parts"] = n_parts
@@ -302,18 +272,30 @@ import torch, glob, os
 from pathlib import Path
 
 def load_simulation(folder):
+    # Find all parts and sort them numerically
     parts = sorted(glob.glob(os.path.join(folder, "part_*.pt")))
     tensors = {}
     meta = None
+    
     for p in parts:
         d = torch.load(p)
+        
+        # Capture metadata only once
         if meta is None:
+            # Filter out tensors to get metadata
             meta = {k: v for k, v in d.items() if not isinstance(v, torch.Tensor)}
+            
+        # Collect tensors from all parts
         for k, v in d.items():
             if isinstance(v, torch.Tensor):
                 tensors.setdefault(k, []).append(v)
+                
+    # Concatenate the tensors back together
     full = {k: torch.cat(v) for k, v in tensors.items()}
+    
+    # Add metadata back to the dictionary
     full.update(meta)
+    
     return full
         """,
         language="python",
