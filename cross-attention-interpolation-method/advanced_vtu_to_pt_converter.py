@@ -1,20 +1,18 @@
 # --------------------------------------------------------------
-# app.py – VTU → PT Converter (Streamlit Cloud + Interactive 3D)
+# app.py – VTU → PT Converter (stpyvista + Streamlit Cloud)
 # --------------------------------------------------------------
 import os
 import re
 import glob
-import io
 import torch
 import numpy as np
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
 from pathlib import Path
 from tqdm import tqdm
 
 # ==============================================================
-# 1. PURE OSMESA HEADLESS RENDERING – NO X11, NO Xvfb
+# 1. PURE OSMESA HEADLESS RENDERING – NO X11
 # ==============================================================
 os.environ["PYVISTA_OFF_SCREEN"] = "True"
 os.environ["PYVISTA_AUTO_CLOSE"] = "False"
@@ -29,17 +27,16 @@ pv.global_theme.background = "white"
 # --------------------------------------------------------------
 # CONFIG
 # --------------------------------------------------------------
-st.set_page_config(page_title="VTU → PT Converter", layout="wide")
+st.set_page_config(page_title="VTU → PT", layout="wide")
 st.title("VTU → PyTorch (.pt) Converter")
 st.markdown(
     """
-    Convert laser-heating `.vtu` files → ML-ready `.pt` tensors  
-    **Interactive 3D preview** | **≤25 MiB split** | **GitHub-safe**
+    **Interactive 3D preview** with `stpyvista` | **≤25 MiB split** | **GitHub-ready**
     """
 )
 
 # --------------------------------------------------------------
-# 2. DATA_ROOT – relative to this script
+# 2. DATA_ROOT – relative to script
 # --------------------------------------------------------------
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_FOLDER = "laser_simulations"
@@ -47,15 +44,12 @@ DEFAULT_FOLDER = "laser_simulations"
 data_folder = st.text_input(
     "Folder with Pxx_Vyy sub-folders",
     value=DEFAULT_FOLDER,
-    help="Leave default if the folder is next to `app.py`."
+    help="Leave default if next to `app.py`."
 )
 DATA_ROOT = SCRIPT_DIR / data_folder
 
 if not DATA_ROOT.exists():
-    st.error(
-        f"Folder not found: `{DATA_ROOT}`\n\n"
-        "Upload **laser_simulations/** with sub-folders like `P10_V65/` next to `app.py`."
-    )
+    st.error(f"Folder not found: `{DATA_ROOT}`\n\nUpload **laser_simulations/** next to `app.py`.")
     st.stop()
 
 # --------------------------------------------------------------
@@ -81,89 +75,70 @@ def find_simulations(root: Path):
 
 simulations = find_simulations(DATA_ROOT)
 if not simulations:
-    st.warning("No `Pxx_Vyy` folders with `.vtu` files found.")
+    st.warning("No `Pxx_Vyy` folders found.")
     st.stop()
 
 st.success(f"Found {len(simulations)} simulations:")
 cols = st.columns(3)
 for i, sim in enumerate(simulations):
     with cols[i % 3]:
-        st.markdown(
-            f"**{sim['name']}**  \nP = `{sim['P']}` W  \nV = `{sim['V']}` mm/s  \nFiles: `{sim['files']}`"
-        )
+        st.markdown(f"**{sim['name']}**  \nP = `{sim['P']}` W  \nV = `{sim['V']}` mm/s  \nFiles: `{sim['files']}`")
 
 # --------------------------------------------------------------
-# 4. Interactive 3D Preview with st_pyvista
+# 4. Interactive 3D Preview with stpyvista
 # --------------------------------------------------------------
 try:
-    from st_pyvista import st_pyvista
-    HAS_ST_PYVISTA = True
+    from stpyvista import stpyvista
+    HAS_STPYVISTA = True
 except ImportError:
-    HAS_ST_PYVISTA = False
-    st.warning("`st-pyvista` not installed. Falling back to static 2D preview.")
+    HAS_STPYVISTA = False
+    st.warning("`stpyvista` not available. Install with `pip install stpyvista`.")
 
 selected_names = st.multiselect(
-    "Select simulations to convert",
+    "Select simulations",
     options=[s["name"] for s in simulations],
     default=[s["name"] for s in simulations[:1]],
 )
 
-if selected_names:
+if selected_names and HAS_STPYVISTA:
     first_sim = next(s for s in simulations if s["name"] == selected_names[0])
     vtu_sample = sorted(first_sim["path"].glob("*.vtu"))[0]
-    st.write(f"**Preview**: `{vtu_sample.name}`")
+    st.write(f"**Interactive 3D**: `{vtu_sample.name}`")
 
     @st.cache_resource
-    def load_and_style_mesh(path):
+    def load_mesh(path):
         mesh = pv.read(path)
         # Pick temperature field
         temp_field = None
-        for k in mesh.point_data.keys():
+        for k in mesh.point_data:
             if "temp" in k.lower() or k.lower() in ("t", "temperature"):
                 temp_field = k
                 break
         if temp_field is None and mesh.point_data:
             temp_field = list(mesh.point_data.keys())[0]
         mesh.set_active_scalars(temp_field)
-        return mesh, temp_field
+        return mesh
 
-    mesh, temp_field = load_and_style_mesh(vtu_sample)
+    mesh = load_mesh(vtu_sample)
 
-    if HAS_ST_PYVISTA:
-        st_pyvista(
-            mesh,
-            panel_kwargs=dict(
-                orientation_widget=True,
-                background="white",
-                zoom=1.8,
-                style="wireframe" if mesh.n_points > 100_000 else None,
-            ),
-            use_container_width=True,
-            horizontal_align="center",
-            key="pyvista_preview"
-        )
-    else:
-        # Fallback: Static 2D scatter
-        pts = mesh.points
-        vals = mesh.point_data[temp_field] if temp_field else pts[:, 2]
-        if vals.ndim > 1:
-            vals = np.linalg.norm(vals, axis=1)
-
-        fig, ax = plt.subplots(figsize=(8, 6))
-        sc = ax.scatter(pts[:, 0], pts[:, 1], c=vals, s=2, cmap="hot", alpha=0.7)
-        ax.set_aspect("equal")
-        ax.set_title(f"{vtu_sample.name} – XY Projection")
-        ax.set_xlabel("X")
-        ax.set_ylabel("Y")
-        plt.colorbar(sc, ax=ax, label=temp_field or "Z")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
+    stpyvista(
+        mesh,
+        panel_kwargs=dict(
+            orientation_widget=True,
+            background="white",
+            zoom=1.6,
+            style="surface",
+        ),
+        use_container_width=True,
+        key="stpyvista_preview"
+    )
+else:
+    st.info("Select a simulation to see 3D preview.")
 
 # --------------------------------------------------------------
-# 5. Convert + Split (≤25 MiB)
+# 5. Convert + Split
 # --------------------------------------------------------------
-split_parts = st.checkbox("Split into ≤25 MiB parts (GitHub-safe)", value=True)
+split_parts = st.checkbox("Split into ≤25 MiB parts", value=True)
 max_mb = st.slider("Max part size (MiB)", 5, 25, 20) if split_parts else 200
 MAX_BYTES = max_mb * 1024 * 1024
 
@@ -173,7 +148,7 @@ if st.button("Convert to .pt", type="primary"):
 
     progress_bar = st.progress(0)
     status_text = st.empty()
-    all_pt_files = []
+    all_files = []
 
     for idx, name in enumerate(selected_names):
         sim = next(s for s in simulations if s["name"] == name)
@@ -228,7 +203,7 @@ if st.button("Convert to .pt", type="primary"):
             part["total_parts"] = n_parts
             part_file = sim_dir / f"part_{i:04d}.pt"
             torch.save(part, part_file)
-            all_pt_files.append(part_file)
+            all_files.append(part_file)
 
         progress_bar.progress((idx + 1) / len(selected_names))
 
@@ -239,26 +214,24 @@ if st.button("Convert to .pt", type="primary"):
     # 6. Download
     # --------------------------------------------------------------
     st.subheader("Download .pt Parts")
-    for pt_file in all_pt_files:
-        size_mb = pt_file.stat().st_size / (1024**2)
-        with open(pt_file, "rb") as f:
+    for f in all_files:
+        size_mb = f.stat().st_size / (1024**2)
+        with open(f, "rb") as fp:
             st.download_button(
-                label=f"{pt_file.relative_to(OUTPUT_ROOT)} ({size_mb:.1f} MB)",
-                data=f,
-                file_name=pt_file.name,
-                mime="application/octet-stream",
+                label=f"{f.relative_to(OUTPUT_ROOT)} ({size_mb:.1f} MB)",
+                data=fp,
+                file_name=f.name,
+                mime="application/octet-stream"
             )
-    st.info(f"All files saved in: `{OUTPUT_ROOT}`")
+    st.info(f"Saved in: `{OUTPUT_ROOT}`")
 
 # --------------------------------------------------------------
-# 7. Reconstruction helper
+# 7. Reconstruct
 # --------------------------------------------------------------
-with st.expander("Re-assemble full .pt from parts"):
+with st.expander("Reconstruct full .pt"):
     st.code(
         """
 import torch, glob, os
-from pathlib import Path
-
 def load_simulation(folder):
     parts = sorted(glob.glob(os.path.join(folder, "part_*.pt")))
     tensors = {}
@@ -273,10 +246,6 @@ def load_simulation(folder):
     full = {k:torch.cat(v) for k,v in tensors.items()}
     full.update(meta)
     return full
-
-# Example
-data = load_simulation("processed_pt/P10_V65")
-print("Temperature shape:", data["Temperature"].shape)
         """,
-        language="python",
+        language="python"
     )
