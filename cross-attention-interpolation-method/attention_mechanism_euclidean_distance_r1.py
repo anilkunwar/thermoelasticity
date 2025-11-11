@@ -275,7 +275,8 @@ if st.button("🔄 Convert to Temporal .pt Sequence", type="primary"):
         grid_res = 20  # Example; tune based on mesh size
         # Get bounds from initial coords
         bounds = np.min(coords[0].numpy(), axis=0).tolist() + np.max(coords[0].numpy(), axis=0).tolist()
-        grid = pv.UniformGrid(dimensions=(grid_res, grid_res, grid_res), spacing=(bounds[3]-bounds[0])/grid_res, (bounds[4]-bounds[1])/grid_res, (bounds[5]-bounds[2])/grid_res, origin=(bounds[0], bounds[1], bounds[2]))
+        grid = pv.UniformGrid(dimensions=(grid_res, grid_res, grid_res), spacing=((bounds[3]-bounds[0])/grid_res, (bounds[4]-bounds[1])/grid_res, (bounds[5]-bounds[2])/grid_res), origin=(bounds[0], bounds[1], bounds[2]))
+
         X, Y, Z = np.meshgrid(np.linspace(bounds[0], bounds[3], grid_res), 
                               np.linspace(bounds[1], bounds[4], grid_res), 
                               np.linspace(bounds[2], bounds[5], grid_res), indexing='ij')
@@ -348,7 +349,7 @@ if st.button("🔄 Convert to Temporal .pt Sequence", type="primary"):
             'metadata': {  # Keep original for compatibility
                 'sim_name': sim["name"],
                 'n_timesteps': n_timesteps,
-                'n_points': n_points * grid_res**3,  # Gridded points
+                'n_points': grid_res**3,  # Gridded points
                 'time_pattern': sim["time_pattern"],
                 'interpolated': False,
                 'feature_dim': 27,
