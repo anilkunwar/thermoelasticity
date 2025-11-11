@@ -257,6 +257,19 @@ if st.button("🔄 Convert to Temporal .pt Sequence", type="primary"):
             ], dim=1) for d in all_data
         ])
        
+        # ML feature concatenation [T, N, F] where F = 27 (3 scalars + 12 vector + 12 tensor)
+        features = torch.cat([
+            temperature.unsqueeze(2),
+            vonmises.unsqueeze(2),
+            pressure.unsqueeze(2),
+            displacement,
+            velocity,
+            principal_stress,
+            principal_strain,
+            stress_components,
+            strain_components
+        ], dim=2)  # [T, N, 27]
+
         # Create comprehensive output structure
         temporal_solution = {
             'metadata': {
@@ -268,11 +281,13 @@ if st.button("🔄 Convert to Temporal .pt Sequence", type="primary"):
                 'total_time': sim["total_time"],
                 'time_pattern': sim["time_pattern"],
                 'interpolated': False,
-                'physics_type': 'laser_thermoelasticity_temporal'
+                'physics_type': 'laser_thermoelasticity_temporal',
+                'feature_dim': features.shape[-1]
             },
             'temporal_data': {
                 'times': times_t, # [T]
                 'coordinates': coords, # [T, N, 3]
+                'features': features,  # [T, N, 27] for ML input
                 'temperature': temperature, # [T, N]
                 'vonmises_stress': vonmises, # [T, N]
                 'pressure': pressure, # [T, N]
@@ -324,19 +339,6 @@ if st.button("🔄 Convert to Temporal .pt Sequence", type="primary"):
 st.subheader("Interpolate Across P and V")
 
 # Load all saved temporal sims
-@st.cache_resource
-def get_db():
-    conn = sqlite3.connect(SCRIPT_DIR / "laser_temporal.db", check_same_thread=False)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS temporal_sims (
-            name TEXT PRIMARY KEY,
-            P_W REAL, V_mm_s REAL, n_timesteps INTEGER, n_points INTEGER,
-            total_time REAL, pt_data BLOB,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    return conn
-
 conn = get_db()
 rows = conn.execute("SELECT name, P_W, V_mm_s, pt_data FROM temporal_sims").fetchall()
 sims_data = {row[0]: {'metadata': {'P_W': row[1], 'V_mm_s': row[2]}, 'temporal_data': torch.load(io.BytesIO(row[3]))['temporal_data']} for row in rows}
@@ -423,6 +425,21 @@ else:
                     for field in interp_temporal_data:
                         interp_temporal_data[field] += w * i_data[field]
 
+                # Reconstruct features from interpolated fields
+                features = torch.cat([
+                    interp_temporal_data['temperature'].unsqueeze(2),
+                    interp_temporal_data['vonmises_stress'].unsqueeze(2),
+                    interp_temporal_data['pressure'].unsqueeze(2),
+                    interp_temporal_data['displacement'],
+                    interp_temporal_data['velocity'],
+                    interp_temporal_data['principal_stress'],
+                    interp_temporal_data['principal_strain'],
+                    interp_temporal_data['stress_components'],
+                    interp_temporal_data['strain_components']
+                ], dim=2)  # [T, N, 27]
+
+                interp_temporal_data['features'] = features
+
                 # Metadata
                 metadata = next(iter(sims_data.values()))['metadata'].copy()
                 metadata.update({
@@ -430,9 +447,11 @@ else:
                     'P_W': target_P,
                     'V_mm_s': target_V,
                     'n_timesteps': len(common_times),
+                    'n_points': next(iter(sims_data.values()))['metadata']['n_points'],
                     'total_time': common_times[-1].item(),
                     'interpolated': True,
-                    'attention_weights': weights.tolist()
+                    'attention_weights': weights.tolist(),
+                    'feature_dim': features.shape[-1]
                 })
 
                 interp_solution = {
@@ -450,7 +469,7 @@ else:
                     INSERT OR REPLACE INTO temporal_sims
                     (name, P_W, V_mm_s, n_timesteps, n_points, total_time, pt_data)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (metadata['sim_name'], target_P, target_V, len(common_times), metadata['n_points'], metadata['total_time'], buf.read()))
+                """, (metadata['sim_name'], target_P, target_V, metadata['n_timesteps'], metadata['n_points'], metadata['total_time'], buf.read()))
                 conn.commit()
 
                 return interp_solution
