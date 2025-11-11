@@ -270,33 +270,103 @@ if st.button("🔄 Convert to Temporal .pt Sequence", type="primary"):
             strain_components
         ], dim=2)  # [T, N, 27]
 
-        # Create comprehensive output structure
+        # Diffusion-like featurization: Convert to lists of np arrays, add grid if possible
+        # Assume resample to fixed 3D grid (e.g., 20x20x20; adjust resolution)
+        grid_res = 20  # Example; tune based on mesh size
+        # Get bounds from initial coords
+        bounds = np.min(coords[0].numpy(), axis=0).tolist() + np.max(coords[0].numpy(), axis=0).tolist()
+        grid = pv.UniformGrid(dimensions=(grid_res, grid_res, grid_res), spacing=(bounds[3]-bounds[0])/grid_res, (bounds[4]-bounds[1])/grid_res, (bounds[5]-bounds[2])/grid_res, origin=(bounds[0], bounds[1], bounds[2]))
+        X, Y, Z = np.meshgrid(np.linspace(bounds[0], bounds[3], grid_res), 
+                              np.linspace(bounds[1], bounds[4], grid_res), 
+                              np.linspace(bounds[2], bounds[5], grid_res), indexing='ij')
+
+        # Per timestep, resample fields to grid (using PyVista; assumes mesh is point cloud)
+        temperature_preds = []
+        vonmises_preds = []
+        pressure_preds = []
+        displacement_preds = []
+        velocity_preds = []
+        principal_stress_preds = []
+        principal_strain_preds = []
+        stress_components_preds = []
+        strain_components_preds = []
+        features_preds = []
+        coordinates_preds = []  # Gridded coords (fixed)
+
+        for t in range(n_timesteps):
+            # Create temp mesh for timestep
+            temp_mesh = pv.PolyData(coords[t].numpy())
+            temp_mesh['temperature'] = temperature[t].numpy()
+            temp_mesh['vonmises_stress'] = vonmises[t].numpy()
+            temp_mesh['pressure'] = pressure[t].numpy()
+            temp_mesh['displacement'] = displacement[t].numpy()
+            temp_mesh['velocity'] = velocity[t].numpy()
+            temp_mesh['principal_stress'] = principal_stress[t].numpy()
+            temp_mesh['principal_strain'] = principal_strain[t].numpy()
+            temp_mesh['stress_components'] = stress_components[t].numpy()
+            temp_mesh['strain_components'] = strain_components[t].numpy()
+            temp_mesh['features'] = features[t].numpy()
+            
+            # Resample to grid
+            resampled = grid.interpolate(temp_mesh, radius=0.01, sharpness=2, strategy='null_value')  # Adjust radius
+            
+            temperature_preds.append(resampled['temperature'])
+            vonmises_preds.append(resampled['vonmises_stress'])
+            pressure_preds.append(resampled['pressure'])
+            displacement_preds.append(resampled['displacement'])
+            velocity_preds.append(resampled['velocity'])
+            principal_stress_preds.append(resampled['principal_stress'])
+            principal_strain_preds.append(resampled['principal_strain'])
+            stress_components_preds.append(resampled['stress_components'])
+            strain_components_preds.append(resampled['strain_components'])
+            features_preds.append(resampled['features'])
+            coordinates_preds.append(resampled.points.reshape(grid_res, grid_res, grid_res, 3))  # [Nx,Ny,Nz,3]
+
+        # Create comprehensive output structure (diffusion-like)
         temporal_solution = {
-            'metadata': {
-                'sim_name': sim["name"],
+            'params': {
                 'P_W': sim["P"],
                 'V_mm_s': sim["V"],
-                'n_timesteps': n_timesteps,
-                'n_points': n_points,
                 'total_time': sim["total_time"],
+                'physics_type': 'laser_thermoelasticity_temporal'
+            },
+            'X': X,
+            'Y': Y,
+            'Z': Z,
+            'times': times_t.numpy(),
+            'temperature_preds': temperature_preds,  # list[T] of [Nx,Ny,Nz]
+            'vonmises_stress_preds': vonmises_preds,
+            'pressure_preds': pressure_preds,
+            'displacement_preds': displacement_preds,  # list[T] of [Nx,Ny,Nz,3]
+            'velocity_preds': velocity_preds,
+            'principal_stress_preds': principal_stress_preds,
+            'principal_strain_preds': principal_strain_preds,
+            'stress_components_preds': stress_components_preds,  # list[T] of [Nx,Ny,Nz,6]
+            'strain_components_preds': strain_components_preds,
+            'features_preds': features_preds,  # list[T] of [Nx,Ny,Nz,27]
+            'coordinates_preds': coordinates_preds,  # list[T] of [Nx,Ny,Nz,3]
+            'metadata': {  # Keep original for compatibility
+                'sim_name': sim["name"],
+                'n_timesteps': n_timesteps,
+                'n_points': n_points * grid_res**3,  # Gridded points
                 'time_pattern': sim["time_pattern"],
                 'interpolated': False,
-                'physics_type': 'laser_thermoelasticity_temporal',
-                'feature_dim': features.shape[-1]
+                'feature_dim': 27,
+                'grid_res': grid_res
             },
-            'temporal_data': {
-                'times': times_t, # [T]
-                'coordinates': coords, # [T, N, 3]
-                'features': features,  # [T, N, 27] for ML input
-                'temperature': temperature, # [T, N]
-                'vonmises_stress': vonmises, # [T, N]
-                'pressure': pressure, # [T, N]
-                'displacement': displacement, # [T, N, 3]
-                'velocity': velocity, # [T, N, 3]
-                'principal_stress': principal_stress,# [T, N, 3]
-                'principal_strain': principal_strain,# [T, N, 3]
-                'stress_components': stress_components, # [T, N, 6]
-                'strain_components': strain_components, # [T, N, 6]
+            'temporal_data': {  # Keep tensor version
+                'times': times_t,
+                'coordinates': coords,
+                'features': features,
+                'temperature': temperature,
+                'vonmises_stress': vonmises,
+                'pressure': pressure,
+                'displacement': displacement,
+                'velocity': velocity,
+                'principal_stress': principal_stress,
+                'principal_strain': principal_strain,
+                'stress_components': stress_components,
+                'strain_components': strain_components
             }
         }
        
@@ -319,7 +389,7 @@ if st.button("🔄 Convert to Temporal .pt Sequence", type="primary"):
             INSERT OR REPLACE INTO temporal_sims
             (name, P_W, V_mm_s, n_timesteps, n_points, total_time, pt_data)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (sim["name"], sim["P"], sim["V"], n_timesteps, n_points, sim["total_time"], buf.read()))
+        """, (sim["name"], sim["P"], sim["V"], n_timesteps, temporal_solution['metadata']['n_points'], sim["total_time"], buf.read()))
         conn.commit()
         conn.close()
        
@@ -340,14 +410,14 @@ st.subheader("Interpolate Across P and V")
 
 # Load all saved temporal sims
 conn = get_db()
-rows = conn.execute("SELECT name, P_W, V_mm_s, pt_data FROM temporal_sims").fetchall()
-sims_data = {row[0]: {'metadata': {'P_W': row[1], 'V_mm_s': row[2]}, 'temporal_data': torch.load(io.BytesIO(row[3]))['temporal_data']} for row in rows}
+rows = conn.execute("SELECT name, pt_data FROM temporal_sims").fetchall()
+sims_data = {row[0]: torch.load(io.BytesIO(row[1])) for row in rows}
 
 if len(sims_data) < 2:
     st.warning("Need at least 2 simulations for interpolation.")
 else:
     # Extract params (P, V)
-    params_list = [(data['metadata']['P_W'], data['metadata']['V_mm_s']) for data in sims_data.values()]
+    params_list = [(data['params']['P_W'], data['params']['V_mm_s']) for data in sims_data.values()]
 
     # Target params
     target_P = st.number_input("Target P (W)", min_value=min(p[0] for p in params_list), max_value=max(p[0] for p in params_list), value=(min(p[0] for p in params_list) + max(p[0] for p in params_list)) / 2)
@@ -396,65 +466,69 @@ else:
                 return self._interpolate_fields(sims_data, combined_weights, target_P, target_V)
 
             def _interpolate_fields(self, sims_data, weights, target_P, target_V):
-                # Find common time grid (e.g., union of all times, sorted unique)
-                all_times = np.unique(np.concatenate([data['temporal_data']['times'].numpy() for data in sims_data.values()]))
+                # Assume all sims have same grid (X,Y,Z); take first
+                first_data = next(iter(sims_data.values()))
+                X, Y, Z = first_data['X'], first_data['Y'], first_data['Z']
+                grid_res = first_data['metadata']['grid_res']
+
+                # Common times
+                all_times = np.unique(np.concatenate([data['times'] for data in sims_data.values()]))
                 common_times = torch.tensor(all_times, dtype=torch.float32)
 
-                # Interpolate each sim to common times
-                interp_sims = {}
-                for name, data in sims_data.items():
-                    orig_times = data['temporal_data']['times'].numpy()
-                    interp_data = {}
-                    for field, tensor in data['temporal_data'].items():
-                        if field == 'times':
-                            continue
-                        # Interp along time dim (axis=0)
-                        if tensor.ndim == 2:  # [T, N]
-                            f = interp1d(orig_times, tensor.numpy(), axis=0, kind='linear', fill_value='extrapolate')
-                            interp_data[field] = torch.tensor(f(common_times.numpy()))
-                        elif tensor.ndim == 3:  # [T, N, D]
-                            f = interp1d(orig_times, tensor.numpy(), axis=0, kind='linear', fill_value='extrapolate')
-                            interp_data[field] = torch.tensor(f(common_times.numpy()))
-                    interp_sims[name] = interp_data
+                # Interpolate list-based preds to common times (per field)
+                interp_preds = {}
+                field_names = [k for k in first_data if k.endswith('_preds')]
+                for field in field_names:
+                    interp_preds[field] = []
+                    for t in common_times.numpy():
+                        # Interp each sim's list at t, weight, average
+                        vals = np.zeros_like(first_data[field][0])
+                        for i, (name, data) in enumerate(sims_data.items()):
+                            f = interp1d(data['times'], np.stack(data[field]), axis=0, kind='linear', fill_value='extrapolate')
+                            vals += weights[i].item() * f(t)
+                        interp_preds[field].append(vals)
 
-                # Weighted sum across sims
-                first_interp = next(iter(interp_sims.values()))
-                interp_temporal_data = {k: torch.zeros_like(v) for k, v in first_interp.items()}
-                for i, (name, i_data) in enumerate(interp_sims.items()):
-                    w = weights[i]
-                    for field in interp_temporal_data:
-                        interp_temporal_data[field] += w * i_data[field]
+                # Reconstruct features_preds from other *_preds
+                features_preds = []
+                for t in range(len(common_times)):
+                    feat_t = np.concatenate([
+                        interp_preds['temperature_preds'][t][..., np.newaxis],
+                        interp_preds['vonmises_stress_preds'][t][..., np.newaxis],
+                        interp_preds['pressure_preds'][t][..., np.newaxis],
+                        interp_preds['displacement_preds'][t],
+                        interp_preds['velocity_preds'][t],
+                        interp_preds['principal_stress_preds'][t],
+                        interp_preds['principal_strain_preds'][t],
+                        interp_preds['stress_components_preds'][t],
+                        interp_preds['strain_components_preds'][t]
+                    ], axis=-1)
+                    features_preds.append(feat_t)
 
-                # Reconstruct features from interpolated fields
-                features = torch.cat([
-                    interp_temporal_data['temperature'].unsqueeze(2),
-                    interp_temporal_data['vonmises_stress'].unsqueeze(2),
-                    interp_temporal_data['pressure'].unsqueeze(2),
-                    interp_temporal_data['displacement'],
-                    interp_temporal_data['velocity'],
-                    interp_temporal_data['principal_stress'],
-                    interp_temporal_data['principal_strain'],
-                    interp_temporal_data['stress_components'],
-                    interp_temporal_data['strain_components']
-                ], dim=2)  # [T, N, 27]
+                interp_preds['features_preds'] = features_preds
 
-                interp_temporal_data['features'] = features
+                # Tensor versions (for original compatibility)
+                interp_temporal_data = {k.replace('_preds', ''): torch.tensor(np.stack(v)) for k, v in interp_preds.items() if k != 'features_preds' and k != 'coordinates_preds'}
+                interp_temporal_data['features'] = torch.tensor(np.stack(features_preds))
 
-                # Metadata
-                metadata = next(iter(sims_data.values()))['metadata'].copy()
+                # Metadata / params
+                metadata = first_data['metadata'].copy()
                 metadata.update({
                     'sim_name': f"Interp_P{target_P}_V{target_V}",
-                    'P_W': target_P,
-                    'V_mm_s': target_V,
                     'n_timesteps': len(common_times),
-                    'n_points': next(iter(sims_data.values()))['metadata']['n_points'],
                     'total_time': common_times[-1].item(),
                     'interpolated': True,
-                    'attention_weights': weights.tolist(),
-                    'feature_dim': features.shape[-1]
+                    'attention_weights': weights.tolist()
                 })
+                params = first_data['params'].copy()
+                params.update({'P_W': target_P, 'V_mm_s': target_V})
 
                 interp_solution = {
+                    'params': params,
+                    'X': X,
+                    'Y': Y,
+                    'Z': Z,
+                    'times': common_times.numpy(),
+                    **interp_preds,
                     'metadata': metadata,
                     'temporal_data': {'times': common_times, **interp_temporal_data}
                 }
