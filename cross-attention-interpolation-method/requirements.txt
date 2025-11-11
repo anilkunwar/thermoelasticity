@@ -5,5 +5,3 @@ torch
 pandas
 numpy
 tqdm
-pyvista
-vtk-osmesa
