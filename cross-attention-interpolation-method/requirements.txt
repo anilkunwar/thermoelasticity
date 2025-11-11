@@ -4,6 +4,7 @@ numpy
 torch
 pyvista
 vtk
+vtk-osmesa
 meshio
 matplotlib
 tqdm
