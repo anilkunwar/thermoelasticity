@@ -327,9 +327,21 @@ if st.button("🔄 Convert to Temporal .pt Sequence", type="primary"):
 st.subheader("🕐 Temporal Visualization")
 
 # Load and visualize temporal data
+#conn = sqlite3.connect(SCRIPT_DIR / "laser_temporal.db", check_same_thread=False)
+#saved = conn.execute("SELECT name FROM temporal_sims").fetchall()
+#conn.close()
 conn = sqlite3.connect(SCRIPT_DIR / "laser_temporal.db", check_same_thread=False)
+conn.execute("""
+    CREATE TABLE IF NOT EXISTS temporal_sims (
+        name TEXT PRIMARY KEY,
+        P_W REAL, V_mm_s REAL, n_timesteps INTEGER, n_points INTEGER,
+        total_time REAL, pt_data BLOB,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+""")
 saved = conn.execute("SELECT name FROM temporal_sims").fetchall()
 conn.close()
+
 
 if saved:
     load_name = st.selectbox("Select saved temporal sim", [r[0] for r in saved])
