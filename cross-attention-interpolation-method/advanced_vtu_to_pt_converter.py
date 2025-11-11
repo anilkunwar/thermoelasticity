@@ -1,9 +1,8 @@
 # --------------------------------------------------------------
-# app.py – VTU → PT Converter (Plotly 3D Visualization + Cloud Safe)
+# app.py – VTU → PT Converter (Plotly 3D – Cloud-Safe)
 # --------------------------------------------------------------
 import os
 import re
-import glob
 import torch
 import numpy as np
 import pandas as pd
@@ -11,28 +10,18 @@ import streamlit as st
 import plotly.graph_objects as go
 from pathlib import Path
 from tqdm import tqdm
-import pyvista as pv  # Still used for VTU parsing, not for rendering
-
-# ==============================================================
-# 1. HEADLESS RENDERING CONFIGURATION (Streamlit Cloud safe)
-# ==============================================================
-os.environ["PYVISTA_OFF_SCREEN"] = "True"
-os.environ["PYVISTA_USE_PANEL"] = "True"
-os.environ["PYVISTA_AUTO_CLOSE"] = "False"
-os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"  # ensure software rendering (OSMesa)
-pv.OFF_SCREEN = True
 
 # --------------------------------------------------------------
-# CONFIG
+# 1. CONFIG
 # --------------------------------------------------------------
 st.set_page_config(page_title="VTU → PT Converter", layout="wide")
 st.title("VTU to PyTorch (.pt) Converter")
 st.markdown(
-    "Convert laser-heating `.vtu` files to ML-ready `.pt` tensors **with interactive 3D Plotly preview**."
+    "Convert laser-heating `.vtu` files → ML-ready `.pt` tensors **with interactive 3-D Plotly preview**."
 )
 
 # --------------------------------------------------------------
-# 2. DATA_ROOT – relative to this script
+# 2. DATA_ROOT
 # --------------------------------------------------------------
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_FOLDER = "laser_simulations"
@@ -42,13 +31,12 @@ data_folder = st.text_input(
     value=DEFAULT_FOLDER,
     help="Leave default if the folder is next to `app.py`."
 )
-
 DATA_ROOT = SCRIPT_DIR / data_folder
+
 if not DATA_ROOT.exists():
     st.error(
         f"Folder not found: `{DATA_ROOT}`\n\n"
-        "Make sure the folder **laser_simulations** (containing P10_V65, …) "
-        "is in the **same directory** as `app.py`."
+        "Make sure **laser_simulations** (with P10_V65, …) is next to `app.py`."
     )
     st.stop()
 
@@ -73,7 +61,6 @@ def find_simulations(root: Path):
                 })
     return sorted(sims, key=lambda x: x["name"])
 
-
 simulations = find_simulations(DATA_ROOT)
 if not simulations:
     st.warning("No `Pxx_Vyy` folders with `.vtu` files found.")
@@ -88,7 +75,7 @@ for i, sim in enumerate(simulations):
         )
 
 # --------------------------------------------------------------
-# 4. Select & Plotly 3-D preview
+# 4. Select & Plotly 3-D preview (meshio – no PyVista rendering)
 # --------------------------------------------------------------
 selected_names = st.multiselect(
     "Select simulations to convert",
@@ -101,13 +88,15 @@ if selected_names:
     vtu_sample = sorted(first_sim["path"].glob("*.vtu"))[0]
     st.write(f"**3-D Preview**: `{vtu_sample.name}`")
 
+    # ---------- Load with meshio (pure Python, no VTK) ----------
     @st.cache_data
-    def load_preview_mesh(p):
-        return pv.read(p)
+    def load_vtu_for_preview(p):
+        import meshio
+        return meshio.read(p)
 
-    mesh = load_preview_mesh(vtu_sample)
+    mesh = load_vtu_for_preview(vtu_sample)
 
-    # Pick a temperature-like field
+    # ---------- Choose scalar field ----------
     temp_field = None
     for k in mesh.point_data.keys():
         if "temp" in k.lower() or k.lower() in ("t", "temperature"):
@@ -116,41 +105,40 @@ if selected_names:
     if temp_field is None and mesh.point_data:
         temp_field = list(mesh.point_data.keys())[0]
 
-    # Extract data
-    points = mesh.points
-    raw_values = mesh.point_data[temp_field]
+    # ---------- Extract points & values ----------
+    points = np.asarray(mesh.points)
+    if temp_field and temp_field in mesh.point_data:
+        raw = np.asarray(mesh.point_data[temp_field])
+        if raw.ndim > 1:
+            values = np.linalg.norm(raw, axis=1)          # vector → magnitude
+        else:
+            values = raw
+    else:
+        values = points[:, 2]                              # fallback to Z
 
-    # Ensure numpy array
-    values = np.array(raw_values)
-
-    # If vector field, take magnitude for coloring
-    if values.ndim > 1 and values.shape[1] > 1:
-        values = np.linalg.norm(values, axis=1)
-
-    # Downsample for visualization if large
-    if points.shape[0] > 200000:
-        idx = np.random.choice(points.shape[0], 200000, replace=False)
+    # ---------- Down-sample if huge ----------
+    MAX_POINTS = 200_000
+    if points.shape[0] > MAX_POINTS:
+        idx = np.random.choice(points.shape[0], MAX_POINTS, replace=False)
         points = points[idx]
         values = values[idx]
+        st.info(f"Down-sampled to {MAX_POINTS:,} points for smooth preview.")
 
-
-    # Create 3D scatter plot with Plotly
+    # ---------- Plotly 3-D scatter ----------
     fig = go.Figure(
-        data=[
-            go.Scatter3d(
-                x=points[:, 0],
-                y=points[:, 1],
-                z=points[:, 2],
-                mode="markers",
-                marker=dict(
-                    size=2,
-                    color=values,
-                    colorscale="Hot",
-                    colorbar=dict(title=temp_field),
-                    opacity=0.7,
-                ),
-            )
-        ]
+        data=go.Scatter3d(
+            x=points[:, 0],
+            y=points[:, 1],
+            z=points[:, 2],
+            mode="markers",
+            marker=dict(
+                size=2,
+                color=values,
+                colorscale="Hot",
+                colorbar=dict(title=temp_field or "Z"),
+                opacity=0.7,
+            ),
+        )
     )
     fig.update_layout(
         scene=dict(
@@ -161,19 +149,18 @@ if selected_names:
         ),
         margin=dict(l=0, r=0, t=30, b=0),
         height=600,
-        title=f"3D Field Visualization: {temp_field}",
     )
-
     st.plotly_chart(fig, use_container_width=True)
 
 # --------------------------------------------------------------
-# 5. Convert (optional split)
+# 5. Convert (optional split) – still uses PyVista (fast)
 # --------------------------------------------------------------
 split_parts = st.checkbox("Split into ≤25 MiB parts (GitHub-safe)", value=True)
 max_mb = st.slider("Max part size (MiB)", 5, 25, 20) if split_parts else 200
 MAX_BYTES = max_mb * 1024 * 1024
 
 if st.button("Convert to .pt", type="primary"):
+    import pyvista as pv                     # import here – only needed for conversion
     OUTPUT_ROOT = SCRIPT_DIR / "processed_pt"
     OUTPUT_ROOT.mkdir(exist_ok=True)
 
@@ -184,7 +171,6 @@ if st.button("Convert to .pt", type="primary"):
     for idx, name in enumerate(selected_names):
         sim = next(s for s in simulations if s["name"] == name)
         status_text.text(f"Processing `{name}`…")
-
         vtu_files = sorted(sim["path"].glob("*.vtu"))
         frames = []
 
@@ -209,13 +195,11 @@ if st.button("Convert to .pt", type="primary"):
                 else:
                     for i in range(arr.shape[1]):
                         base_data[f"{field_name}_{i}"] = arr[:, i]
-
             df = pd.DataFrame(base_data)
             frames.append(df)
 
         full_df = pd.concat(frames, ignore_index=True)
         numeric_cols = full_df.select_dtypes(include=[np.number]).columns
-
         tensors = {
             col: torch.from_numpy(full_df[col].values.astype(np.float32))
             for col in numeric_cols
@@ -238,7 +222,6 @@ if st.button("Convert to .pt", type="primary"):
             part.update(metadata)
             part["part_index"] = i
             part["total_parts"] = n_parts
-
             part_file = sim_dir / f"part_{i:04d}.pt"
             torch.save(part, part_file)
             all_pt_files.append(part_file)
@@ -270,8 +253,6 @@ with st.expander("Re-assemble a full .pt from parts"):
     st.code(
         """
 import torch, glob, os
-from pathlib import Path
-
 def load_simulation(folder):
     parts = sorted(glob.glob(os.path.join(folder, "part_*.pt")))
     tensors = {}
