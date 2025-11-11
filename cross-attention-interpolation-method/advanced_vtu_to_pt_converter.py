@@ -14,32 +14,27 @@ from pathlib import Path
 from tqdm import tqdm
 
 # ==============================================================
-# 1. HEADLESS RENDERING CONFIGURATION (Streamlit Cloud safe)
+# 1. STREAMLIT CLOUD SAFE CONFIGURATION (No OpenGL/X11 dependencies)
 # ==============================================================
-# Disable OpenGL (Streamlit Cloud has no display or GPU)
+# Minimal PyVista configuration for reading only
 os.environ["PYVISTA_OFF_SCREEN"] = "True"
-os.environ["PYVISTA_USE_PANEL"] = "True"
-os.environ["PYVISTA_AUTO_CLOSE"] = "False"
-
-# Force OSMesa software rendering backend instead of OpenGL2
+os.environ["PYVISTA_USE_PANEL"] = "False"  # No Panel/OpenGL
+os.environ["PYVISTA_AUTO_CLOSE"] = "True"
 os.environ["VTK_DEFAULT_RENDER_WINDOW_OFFSCREEN"] = "True"
 os.environ["VTK_USE_OFFSCREEN"] = "True"
-os.environ["PYVISTA_BUILD_TYPE"] = "headless"
-os.environ["MESA_GL_VERSION_OVERRIDE"] = "3.3"
-os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
-
-# Optional (prevents VTK trying to load OpenGL)
-os.environ["PYVISTA_DISABLE_FOONATHAN_MEMORY"] = "1"
 
 import pyvista as pv
+# DO NOT call pv.start_xvfb() - it requires X11 libraries
+pv.OFF_SCREEN = True
 
-# Try to start a virtual framebuffer if available
+# Import Plotly for 3D visualization
 try:
-    pv.start_xvfb()
-    print("[INFO] Xvfb virtual display started.")
-except Exception as e:
-    pv.OFF_SCREEN = True
-    print(f"[INFO] Xvfb not available. Using off-screen mode. ({e})")
+    import plotly.graph_objects as go
+    import plotly.express as px
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+    st.warning("Plotly not available for 3D visualization")
 
 # --------------------------------------------------------------
 # CONFIG
@@ -105,11 +100,11 @@ for i, sim in enumerate(simulations):
         )
 
 # --------------------------------------------------------------
-# 4. Enhanced 3D Rendering Functions
+# 4. Enhanced 3D Rendering Functions (Streamlit Cloud Safe)
 # --------------------------------------------------------------
 @st.cache_data
 def load_preview_mesh(p):
-    """Load mesh with robust error handling"""
+    """Load mesh with robust error handling - PyVista for reading only"""
     try:
         return pv.read(p)
     except Exception as e:
@@ -128,41 +123,60 @@ def load_preview_mesh(p):
             st.error(f"Meshio also failed to read {p.name}: {e2}")
             return None
 
-def create_3d_plot(mesh, temp_field, mesh_name):
-    """Create a 3D plot with robust rendering"""
+def create_plotly_3d(mesh, temp_field, mesh_name):
+    """Create interactive 3D plot using Plotly (no OpenGL dependencies)"""
     try:
-        # Create plotter with conservative settings
-        plotter = pv.Plotter(off_screen=True, window_size=[800, 600])
+        pts = np.asarray(mesh.points)
         
-        # Add the mesh with scalar data
-        if hasattr(mesh, 'point_data') and temp_field in mesh.point_data:
-            plotter.add_mesh(
-                mesh, 
-                scalars=temp_field, 
-                cmap="hot", 
-                show_scalar_bar=True,
-                scalar_bar_args={'title': temp_field}
-            )
+        # Get values for coloring
+        if temp_field and hasattr(mesh, 'point_data') and (temp_field in mesh.point_data):
+            vals = np.asarray(mesh.point_data[temp_field])
+            if vals.ndim > 1:
+                vals = np.linalg.norm(vals, axis=1)
+            color_label = temp_field
         else:
-            # Fallback: plot geometry only
-            plotter.add_mesh(mesh, color='lightblue', show_edges=True)
+            vals = pts[:, 2]  # Use Z-coordinate as fallback
+            color_label = "Z-coordinate"
+
+        # Create Plotly 3D scatter
+        fig = go.Figure(data=[go.Scatter3d(
+            x=pts[:, 0],
+            y=pts[:, 1], 
+            z=pts[:, 2],
+            mode='markers',
+            marker=dict(
+                size=2,
+                color=vals,
+                colorscale='Hot',
+                colorbar=dict(title=color_label),
+                opacity=0.7
+            ),
+            hovertemplate='<b>X</b>: %{x:.3f}<br><b>Y</b>: %{y:.3f}<br><b>Z</b>: %{z:.3f}<br><b>Value</b>: %{marker.color:.3f}<extra></extra>'
+        )])
+
+        fig.update_layout(
+            title=dict(
+                text=f"3D Preview: {mesh_name}",
+                x=0.5,
+                xanchor='center'
+            ),
+            scene=dict(
+                xaxis_title='X',
+                yaxis_title='Y',
+                zaxis_title='Z',
+                camera=dict(
+                    eye=dict(x=1.5, y=1.5, z=1.5)
+                ),
+                aspectmode='data'
+            ),
+            margin=dict(l=0, r=0, b=0, t=40),
+            height=600
+        )
         
-        # Configure plotter for headless rendering
-        plotter.set_background("white")
-        plotter.add_axes()
-        plotter.add_title(f"3D Preview: {mesh_name}", font_size=16)
-        
-        # Set a good camera position
-        plotter.camera_position = 'iso'  # Isometric view
-        plotter.camera.zoom(1.2)
-        
-        # Render and capture
-        png = plotter.screenshot(transparent_background=False, return_img=True)
-        plotter.close()
-        return png
+        return fig
         
     except Exception as e:
-        st.warning(f"3D rendering failed: {e}")
+        st.error(f"Plotly 3D rendering failed: {e}")
         return None
 
 def create_2d_projection(mesh, temp_field, mesh_name):
@@ -243,7 +257,7 @@ def create_simple_3d_matplotlib(mesh, temp_field, mesh_name):
         ax.set_zlabel('Z')
         ax.set_title(f'3D Point Cloud: {mesh_name}')
         
-        plt.colorbar(sc, ax=ax, label=temp_field or 'Value')
+        plt.colorbar(sc, ax=ax, label=(temp_field or 'Value'))
         plt.tight_layout()
 
         buf = io.BytesIO()
@@ -257,7 +271,7 @@ def create_simple_3d_matplotlib(mesh, temp_field, mesh_name):
         return None
 
 # --------------------------------------------------------------
-# 5. Select & Preview with Enhanced 3D Rendering
+# 5. Select & Preview with Streamlit-Safe 3D Rendering
 # --------------------------------------------------------------
 selected_names = st.multiselect(
     "Select simulations to convert",
@@ -300,20 +314,27 @@ if selected_names:
                 temp_field = keys[0]
 
             # Rendering method selector
-            render_method = st.radio(
-                "Rendering Method",
-                ["Auto (PyVista 3D)", "2D Projections", "Matplotlib 3D"],
-                index=0,
-                help="PyVista 3D is best but may not work in all environments"
-            )
+            if PLOTLY_AVAILABLE:
+                render_method = st.radio(
+                    "Rendering Method",
+                    ["Plotly 3D (Interactive)", "2D Projections", "Matplotlib 3D"],
+                    index=0,
+                    help="Plotly 3D works best in Streamlit Cloud"
+                )
+            else:
+                render_method = st.radio(
+                    "Rendering Method",
+                    ["2D Projections", "Matplotlib 3D"],
+                    index=0,
+                    help="Plotly not available - using fallback methods"
+                )
 
-            if render_method == "Auto (PyVista 3D)":
-                # Try PyVista 3D first
-                png = create_3d_plot(mesh, temp_field, vtu_sample.name)
-                if png is not None:
-                    st.image(png, use_column_width=True, caption="3D PyVista Rendering")
+            if render_method == "Plotly 3D (Interactive)" and PLOTLY_AVAILABLE:
+                fig = create_plotly_3d(mesh, temp_field, vtu_sample.name)
+                if fig is not None:
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
-                    st.warning("PyVista 3D rendering failed, falling back to 2D projections")
+                    st.warning("Plotly 3D rendering failed, falling back to 2D projections")
                     buf = create_2d_projection(mesh, temp_field, vtu_sample.name)
                     if buf:
                         st.image(buf, use_column_width=True, caption="2D Projections (Fallback)")
@@ -344,7 +365,7 @@ if selected_names:
                     st.metric("Size Y", f"{bounds[1]:.1f}")
 
 # --------------------------------------------------------------
-# 6. Convert (optional split) - REST OF ORIGINAL CODE BELOW
+# 6. Convert (optional split)
 # --------------------------------------------------------------
 split_parts = st.checkbox("Split into ≤25 MiB parts (GitHub-safe)", value=True)
 max_mb = st.slider("Max part size (MiB)", 5, 25, 20) if split_parts else 200
