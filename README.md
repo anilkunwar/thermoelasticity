@@ -29,3 +29,5 @@ vtu reader
 [![integratedcoreshelldesign](https://img.shields.io/badge/vtureader1-streamlit-red)](https://vtu-reader1.streamlit.app/)
 
 [![integratedcoreshelldesign](https://img.shields.io/badge/vtureader2-streamlit-red)](https://vtu-reader2.streamlit.app/)
+
+[![integratedcoreshelldesign](https://img.shields.io/badge/vtureader3-streamlit-red)](https://vtu-reader3.streamlit.app/) # vtu reader with temporal sequencing features
