@@ -1,42 +1,44 @@
 # --------------------------------------------------------------
-# app.py – VTU → PT Converter (Streamlit Cloud + Relative Path)
+# app.py – VTU → PT Converter (Streamlit Cloud + Local Compatible)
 # --------------------------------------------------------------
 import os
-import streamlit as st
-import pandas as pd
-import numpy as np
-import torch
-import pyvista as pv
-import panel as pn
-import glob
 import re
+import glob
+import torch
+import numpy as np
+import pandas as pd
+import streamlit as st
 from pathlib import Path
 from tqdm import tqdm
 
 # ==============================================================
-# 1. HEAD-LESS RENDERING (must be BEFORE importing pyvista)
+# 1. HEADLESS RENDERING SETUP (must be BEFORE importing pyvista)
 # ==============================================================
 os.environ["PYVISTA_OFF_SCREEN"] = "True"
 os.environ["PYVISTA_USE_PANEL"] = "True"
 os.environ["PYVISTA_AUTO_CLOSE"] = "False"
-# Force software rendering (OSMesa) – works on Streamlit Cloud
-os.environ["vtkRenderingBackend"] = "OpenGL2"
 os.environ["MESA_GL_VERSION_OVERRIDE"] = "3.3"
+os.environ["PYVISTA_GLOBAL_THEME"] = "document"
 
-# Start a virtual display (Xvfb) – required on headless servers
-pv.start_xvfb()
+import pyvista as pv  # import after env vars
+
+# Try to start virtual display (if available)
+try:
+    pv.start_xvfb()
+    print("[INFO] Xvfb virtual display started.")
+except Exception as e:
+    pv.OFF_SCREEN = True
+    print(f"[INFO] Xvfb not available. Using off-screen mode. ({e})")
 
 # --------------------------------------------------------------
 # CONFIG
 # --------------------------------------------------------------
 st.set_page_config(page_title="VTU → PT Converter", layout="wide")
 st.title("VTU to PyTorch (.pt) Converter")
-st.markdown(
-    "Convert laser-heating `.vtu` files to ML-ready `.pt` tensors **with 3-D preview**."
-)
+st.markdown("Convert laser-heating `.vtu` files to ML-ready `.pt` tensors **with 3-D preview**.")
 
 # --------------------------------------------------------------
-# 2. DATA_ROOT – relative to this script (os.path.join)
+# 2. DATA_ROOT – relative to this script
 # --------------------------------------------------------------
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_FOLDER = "laser_simulations"
@@ -68,20 +70,17 @@ def find_simulations(root: Path):
             if vtu_files:
                 P = float(pattern.match(p.name).group(1))
                 V = float(pattern.match(p.name).group(2))
-                sims.append(
-                    {
-                        "name": p.name,
-                        "path": p,
-                        "P": P,
-                        "V": V,
-                        "files": len(vtu_files),
-                    }
-                )
+                sims.append({
+                    "name": p.name,
+                    "path": p,
+                    "P": P,
+                    "V": V,
+                    "files": len(vtu_files),
+                })
     return sorted(sims, key=lambda x: x["name"])
 
 
 simulations = find_simulations(DATA_ROOT)
-
 if not simulations:
     st.warning("No `Pxx_Vyy` folders with `.vtu` files found.")
     st.stop()
@@ -114,7 +113,7 @@ if selected_names:
 
     mesh = load_preview_mesh(vtu_sample)
 
-    # pick a temperature-like field
+    # Pick a temperature-like field
     temp_field = None
     for k in mesh.point_data.keys():
         if "temp" in k.lower() or k.lower() in ("t", "temperature"):
@@ -123,11 +122,12 @@ if selected_names:
     if temp_field is None and mesh.point_data:
         temp_field = list(mesh.point_data.keys())[0]
 
-    # Head-less plotter
+    # Headless plotter (safe)
     plotter = pv.Plotter(off_screen=True, window_size=[800, 600])
     plotter.add_mesh(mesh, scalars=temp_field, cmap="hot", show_scalar_bar=True)
     plotter.set_background("white")
     plotter.camera_position = "xy"
+
     try:
         png = plotter.screenshot(transparent_background=True, return_img=True)
         st.image(png, use_column_width=True)
@@ -137,9 +137,9 @@ if selected_names:
         plotter.close()
 
 # --------------------------------------------------------------
-# 5. Convert (optional split to less than or equal to 25 MiB)
+# 5. Convert (optional split)
 # --------------------------------------------------------------
-split_parts = st.checkbox("Split into less than or equal to 25 MiB parts (GitHub-safe)", value=True)
+split_parts = st.checkbox("Split into ≤25 MiB parts (GitHub-safe)", value=True)
 max_mb = st.slider("Max part size (MiB)", 5, 25, 20) if split_parts else 200
 MAX_BYTES = max_mb * 1024 * 1024
 
@@ -179,21 +179,18 @@ if st.button("Convert to .pt", type="primary"):
                 else:
                     for i in range(arr.shape[1]):
                         base_data[f"{field_name}_{i}"] = arr[:, i]
+
             df = pd.DataFrame(base_data)
             frames.append(df)
 
         full_df = pd.concat(frames, ignore_index=True)
-
         numeric_cols = full_df.select_dtypes(include=[np.number]).columns
+
         tensors = {
             col: torch.from_numpy(full_df[col].values.astype(np.float32))
             for col in numeric_cols
         }
-        metadata = {
-            "simulation": name,
-            "P_W": float(sim["P"]),
-            "Vscan_mm_s": float(sim["V"]),
-        }
+        metadata = {"simulation": name, "P_W": float(sim["P"]), "Vscan_mm_s": float(sim["V"])}
 
         # ---------- Split ----------
         N = next(iter(tensors.values())).shape[0]
@@ -207,7 +204,6 @@ if st.button("Convert to .pt", type="primary"):
         for i in range(n_parts):
             start = i * rows_per_part
             end = min(start + rows_per_part, N)
-
             part = {k: v[start:end] for k, v in tensors.items()}
             part.update(metadata)
             part["part_index"] = i
@@ -238,7 +234,7 @@ if st.button("Convert to .pt", type="primary"):
     st.info(f"All files saved in: `{OUTPUT_ROOT}`")
 
 # --------------------------------------------------------------
-# 7. (Optional) Reconstruction helper
+# 7. Reconstruction helper
 # --------------------------------------------------------------
 with st.expander("Re-assemble a full .pt from parts"):
     st.code(
@@ -260,9 +256,6 @@ def load_simulation(folder):
     full = {k: torch.cat(v) for k, v in tensors.items()}
     full.update(meta)
     return full
-
-# Example
-data = load_simulation("processed_pt/P10_V65")
-print(data["Temperature"].shape)
-        """
+        """,
+        language="python",
     )
