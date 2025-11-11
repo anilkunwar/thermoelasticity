@@ -1,5 +1,5 @@
 # --------------------------------------------------------------
-# app.py – VTU → PT Converter (Streamlit Cloud + Local)
+# app.py – VTU → PT Converter (Streamlit Cloud – pure OSMesa)
 # --------------------------------------------------------------
 import os
 import re
@@ -14,25 +14,21 @@ from pathlib import Path
 from tqdm import tqdm
 
 # ==============================================================
-# 1. HEADLESS RENDERING – MUST BE BEFORE ANY PYVISTA IMPORT
+# 1. PURE OSMESA HEADLESS RENDERING – NO X11, NO Xvfb
 # ==============================================================
+# MUST be set **before** any pyvista import!
 os.environ["PYVISTA_OFF_SCREEN"] = "True"
-os.environ["PYVISTA_USE_PANEL"] = "True"
 os.environ["PYVISTA_AUTO_CLOSE"] = "False"
-os.environ["VTK_DEFAULT_RENDER_WINDOW_OFFSCREEN"] = "True"
-os.environ["VTK_USE_OFFSCREEN"] = "True"
+os.environ["PYVISTA_USE_PANEL"] = "True"
+
+# Force OSMesa (software OpenGL) – no GPU, no X11
 os.environ["MESA_GL_VERSION_OVERRIDE"] = "3.3"
 os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+os.environ["PYVISTA_HEADLESS"] = "True"   # PyVista 0.43+
 
-# Start a virtual framebuffer (Xvfb) – works on Streamlit Cloud
-try:
-    import pyvista as pv
-    pv.start_xvfb()
-    st.toast("Xvfb virtual display started.")
-except Exception as e:
-    st.warning(f"Xvfb not available – falling back to pure off-screen mode ({e})")
-    import pyvista as pv
-    pv.OFF_SCREEN = True
+# DO NOT call pv.start_xvfb() – it pulls in X11 libs!
+import pyvista as pv
+pv.global_theme.background = "white"
 
 # --------------------------------------------------------------
 # CONFIG
@@ -44,7 +40,7 @@ st.markdown(
 )
 
 # --------------------------------------------------------------
-# 2. DATA_ROOT – relative to this script
+# 2. DATA_ROOT – relative to script
 # --------------------------------------------------------------
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_FOLDER = "laser_simulations"
@@ -59,8 +55,7 @@ DATA_ROOT = SCRIPT_DIR / data_folder
 if not DATA_ROOT.exists():
     st.error(
         f"Folder not found: `{DATA_ROOT}`\n\n"
-        "Upload a folder named **laser_simulations** (with sub-folders P10_V65, …) "
-        "next to `app.py`."
+        "Upload **laser_simulations/** with sub-folders P10_V65, … next to `app.py`."
     )
     st.stop()
 
@@ -76,20 +71,16 @@ def find_simulations(root: Path):
             if vtu_files:
                 P = float(pattern.match(p.name).group(1))
                 V = float(pattern.match(p.name).group(2))
-                sims.append(
-                    {
-                        "name": p.name,
-                        "path": p,
-                        "P": P,
-                        "V": V,
-                        "files": len(vtu_files),
-                    }
-                )
+                sims.append({
+                    "name": p.name,
+                    "path": p,
+                    "P": P,
+                    "V": V,
+                    "files": len(vtu_files),
+                })
     return sorted(sims, key=lambda x: x["name"])
 
-
 simulations = find_simulations(DATA_ROOT)
-
 if not simulations:
     st.warning("No `Pxx_Vyy` folders with `.vtu` files found.")
     st.stop()
@@ -116,15 +107,14 @@ if selected_names:
     vtu_sample = sorted(first_sim["path"].glob("*.vtu"))[0]
     st.write(f"**3-D Preview**: `{vtu_sample.name}`")
 
-    # ---------- Load mesh (pyvista → fallback meshio) ----------
     @st.cache_data
-    def load_mesh(path):
+    def load_mesh(p):
         try:
-            return pv.read(path)
+            return pv.read(p)
         except Exception:
             try:
                 import meshio
-                m = meshio.read(str(path))
+                m = meshio.read(str(p))
                 class SimpleMesh:
                     pass
                 sm = SimpleMesh()
@@ -133,27 +123,20 @@ if selected_names:
                 sm.field_data = getattr(m, "field_data", {})
                 return sm
             except Exception as e:
-                st.error(f"Cannot read mesh for preview: {e}")
+                st.error(f"Cannot read mesh: {e}")
                 return None
 
     mesh = load_mesh(vtu_sample)
     if mesh is None:
-        st.warning("Preview unavailable – mesh could not be loaded.")
+        st.warning("Preview unavailable.")
     else:
-        # ---------- Choose scalar field ----------
-        try:
-            keys = list(mesh.point_data.keys())
-        except Exception:
-            keys = []
-        temp_field = None
-        for k in keys:
-            if "temp" in k.lower() or k.lower() in ("t", "temperature"):
-                temp_field = k
-                break
+        # pick scalar field
+        keys = list(getattr(mesh, "point_data", {}).keys())
+        temp_field = next((k for k in keys if "temp" in k.lower() or k.lower() in ("t", "temperature")), None)
         if temp_field is None and keys:
             temp_field = keys[0]
 
-        # ---------- 3-D rendering (pyvista) ----------
+        # ---------- 3-D render ----------
         preview_3d = None
         try:
             plotter = pv.Plotter(off_screen=True, window_size=[1024, 768])
@@ -164,54 +147,37 @@ if selected_names:
                 show_scalar_bar=True,
                 lighting=True,
             )
-            plotter.set_background("white")
             plotter.camera_position = "xy"
             preview_3d = plotter.screenshot(transparent_background=True, return_img=True)
             plotter.close()
         except Exception as e:
             st.warning(f"3-D rendering failed: {e}")
 
-        # ---------- Show 3-D if we have it ----------
         if preview_3d is not None:
             st.image(preview_3d, use_column_width=True)
         else:
-            # ---------- 2-D fallback (matplotlib scatter) ----------
+            # ---------- 2-D fallback ----------
             try:
                 pts = np.asarray(mesh.points)
-                if temp_field and temp_field in getattr(mesh, "point_data", {}):
-                    vals = np.asarray(mesh.point_data[temp_field])
-                    if vals.ndim > 1:
-                        vals = np.linalg.norm(vals, axis=1)
-                else:
-                    vals = pts[:, 2]  # fallback to Z
+                vals = np.asarray(mesh.point_data[temp_field]) if temp_field else pts[:, 2]
+                if vals.ndim > 1:
+                    vals = np.linalg.norm(vals, axis=1)
 
-                fig, ax = plt.subplots(figsize=(8, 6), dpi=120)
-                sc = ax.scatter(
-                    pts[:, 0],
-                    pts[:, 1],
-                    c=vals,
-                    s=4,
-                    cmap="hot",
-                    marker=".",
-                    rasterized=True,
-                )
-                ax.set_aspect("equal", adjustable="box")
-                ax.set_title(f"{vtu_sample.name} – XY projection")
-                ax.set_xlabel("X")
-                ax.set_ylabel("Y")
+                fig, ax = plt.subplots(figsize=(8, 6))
+                sc = ax.scatter(pts[:, 0], pts[:, 1], c=vals, s=4, cmap="hot")
+                ax.set_aspect("equal")
+                ax.set_title(f"{vtu_sample.name} – XY")
                 plt.colorbar(sc, ax=ax, label=temp_field or "Z")
-                plt.tight_layout()
-
                 buf = io.BytesIO()
                 fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
                 buf.seek(0)
-                st.image(buf, use_column_width=True)
+                st.image(buf)
                 plt.close(fig)
             except Exception as e2:
-                st.error(f"Even 2-D fallback failed: {e2}")
+                st.error(f"2-D fallback failed: {e2}")
 
 # --------------------------------------------------------------
-# 5. Convert (optional split)
+# 5. Convert + optional split
 # --------------------------------------------------------------
 split_parts = st.checkbox("Split into ≤25 MiB parts (GitHub-safe)", value=True)
 max_mb = st.slider("Max part size (MiB)", 5, 25, 20) if split_parts else 200
@@ -257,21 +223,11 @@ if st.button("Convert to .pt", type="primary"):
             frames.append(df)
 
         full_df = pd.concat(frames, ignore_index=True)
-
         numeric_cols = full_df.select_dtypes(include=[np.number]).columns
-        tensors = {
-            col: torch.from_numpy(full_df[col].values.astype(np.float32))
-            for col in numeric_cols
-        }
-        metadata = {
-            "simulation": name,
-            "P_W": float(sim["P"]),
-            "Vscan_mm_s": float(sim["V"]),
-        }
+        tensors = {col: torch.from_numpy(full_df[col].values.astype(np.float32)) for col in numeric_cols}
+        metadata = {"simulation": name, "P_W": float(sim["P"]), "Vscan_mm_s": float(sim["V"])}
 
-        # ---------- FIXED LINE ----------
-        N = next(iter(tensors.values())).shape[0]   # <-- correct syntax
-
+        N = next(iter(tensors.values())).shape[0]
         row_bytes = sum(t[0:1].numel() * 4 for t in tensors.values())
         rows_per_part = max(1, MAX_BYTES // row_bytes)
         n_parts = (N + rows_per_part - 1) // rows_per_part
@@ -282,12 +238,10 @@ if st.button("Convert to .pt", type="primary"):
         for i in range(n_parts):
             start = i * rows_per_part
             end = min(start + rows_per_part, N)
-
             part = {k: v[start:end] for k, v in tensors.items()}
             part.update(metadata)
             part["part_index"] = i
             part["total_parts"] = n_parts
-
             part_file = sim_dir / f"part_{i:04d}.pt"
             torch.save(part, part_file)
             all_pt_files.append(part_file)
@@ -298,11 +252,11 @@ if st.button("Convert to .pt", type="primary"):
     st.balloons()
 
     # --------------------------------------------------------------
-    # 6. Download results
+    # 6. Download
     # --------------------------------------------------------------
     st.subheader("Download .pt Files")
     for pt_file in all_pt_files:
-        size_mb = pt_file.stat().st_size / (1024 * 1024)
+        size_mb = pt_file.stat().st_size / (1024**2)
         with open(pt_file, "rb") as f:
             st.download_button(
                 label=f"{pt_file.relative_to(OUTPUT_ROOT)} ({size_mb:.1f} MB)",
@@ -315,12 +269,10 @@ if st.button("Convert to .pt", type="primary"):
 # --------------------------------------------------------------
 # 7. Reconstruction helper
 # --------------------------------------------------------------
-with st.expander("Re-assemble a full .pt from parts"):
+with st.expander("Re-assemble full .pt from parts"):
     st.code(
         """
 import torch, glob, os
-from pathlib import Path
-
 def load_simulation(folder):
     parts = sorted(glob.glob(os.path.join(folder, "part_*.pt")))
     tensors = {}
@@ -328,17 +280,13 @@ def load_simulation(folder):
     for p in parts:
         d = torch.load(p)
         if meta is None:
-            meta = {k: v for k, v in d.items() if not isinstance(v, torch.Tensor)}
-        for k, v in d.items():
-            if isinstance(v, torch.Tensor):
-                tensors.setdefault(k, []).append(v)
-    full = {k: torch.cat(v) for k, v in tensors.items()}
+            meta = {k:v for k,v in d.items() if not isinstance(v,torch.Tensor)}
+        for k,v in d.items():
+            if isinstance(v,torch.Tensor):
+                tensors.setdefault(k,[]).append(v)
+    full = {k:torch.cat(v) for k,v in tensors.items()}
     full.update(meta)
     return full
-
-# Example
-data = load_simulation("processed_pt/P10_V65")
-print(data["Temperature"].shape)
         """,
         language="python",
     )
