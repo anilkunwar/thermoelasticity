@@ -4,18 +4,18 @@
 import os
 import re
 import glob
+import io
 import torch
 import numpy as np
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt
 from pathlib import Path
 from tqdm import tqdm
 
 # ==============================================================
 # 1. HEADLESS RENDERING CONFIGURATION (Streamlit Cloud safe)
 # ==============================================================
-import os
-
 # Disable OpenGL (Streamlit Cloud has no display or GPU)
 os.environ["PYVISTA_OFF_SCREEN"] = "True"
 os.environ["PYVISTA_USE_PANEL"] = "True"
@@ -33,12 +33,7 @@ os.environ["PYVISTA_DISABLE_FOONATHAN_MEMORY"] = "1"
 
 import pyvista as pv
 
-# No Xvfb or OpenGL initialization — just pure off-screen
-pv.OFF_SCREEN = True
-print("[INFO] Running in fully headless OSMesa mode.")
-
-
-# Try to start virtual display (if available)
+# Try to start a virtual framebuffer if available
 try:
     pv.start_xvfb()
     print("[INFO] Xvfb virtual display started.")
@@ -110,7 +105,7 @@ for i, sim in enumerate(simulations):
         )
 
 # --------------------------------------------------------------
-# 4. Select & 3-D preview
+# 4. Select & Preview (robust headless version)
 # --------------------------------------------------------------
 selected_names = st.multiselect(
     "Select simulations to convert",
@@ -125,32 +120,80 @@ if selected_names:
 
     @st.cache_data
     def load_preview_mesh(p):
-        return pv.read(p)
+        try:
+            return pv.read(p)
+        except Exception:
+            try:
+                import meshio
+                m = meshio.read(str(p))
+                class SimpleMesh:
+                    pass
+                sm = SimpleMesh()
+                sm.points = m.points
+                sm.point_data = getattr(m, "point_data", {})
+                sm.field_data = getattr(m, "field_data", {})
+                return sm
+            except Exception as e:
+                st.error(f"Unable to read preview mesh: {e}")
+                return None
 
     mesh = load_preview_mesh(vtu_sample)
+    if mesh is None:
+        st.warning("Preview unavailable (could not load mesh).")
+    else:
+        # Pick a temperature-like field
+        temp_field = None
+        try:
+            keys = list(mesh.point_data.keys())
+        except Exception:
+            keys = []
+        for k in keys:
+            if "temp" in k.lower() or k.lower() in ("t", "temperature"):
+                temp_field = k
+                break
+        if temp_field is None and keys:
+            temp_field = keys[0]
 
-    # Pick a temperature-like field
-    temp_field = None
-    for k in mesh.point_data.keys():
-        if "temp" in k.lower() or k.lower() in ("t", "temperature"):
-            temp_field = k
-            break
-    if temp_field is None and mesh.point_data:
-        temp_field = list(mesh.point_data.keys())[0]
+        preview_rendered = False
+        try:
+            plotter = pv.Plotter(off_screen=True, window_size=[800, 600])
+            plotter.add_mesh(mesh, scalars=temp_field, cmap="hot", show_scalar_bar=True)
+            plotter.set_background("white")
+            plotter.camera_position = "xy"
+            png = plotter.screenshot(transparent_background=True, return_img=True)
+            plotter.close()
+            st.image(png, use_column_width=True)
+            preview_rendered = True
+        except Exception as e_plot:
+            st.warning("Full 3-D preview unavailable (headless rendering). Showing 2-D projection instead.")
+            st.write(f"_Preview fallback reason: {str(e_plot)}_")
 
-    # Headless plotter (safe)
-    plotter = pv.Plotter(off_screen=True, window_size=[800, 600])
-    plotter.add_mesh(mesh, scalars=temp_field, cmap="hot", show_scalar_bar=True)
-    plotter.set_background("white")
-    plotter.camera_position = "xy"
+        if not preview_rendered:
+            try:
+                pts = np.asarray(mesh.points)
+                if temp_field and (temp_field in getattr(mesh, "point_data", {})):
+                    vals = np.asarray(mesh.point_data[temp_field])
+                    if vals.ndim > 1:
+                        vals = np.linalg.norm(vals, axis=1)
+                else:
+                    vals = pts[:, 2]
 
-    try:
-        png = plotter.screenshot(transparent_background=True, return_img=True)
-        st.image(png, use_column_width=True)
-    except Exception as e:
-        st.warning(f"Preview failed (headless rendering issue): {e}")
-    finally:
-        plotter.close()
+                fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
+                sc = ax.scatter(pts[:, 0], pts[:, 1], c=vals, s=6, cmap="hot", marker=".", rasterized=True)
+                ax.set_aspect("equal", adjustable="box")
+                ax.set_title(f"{vtu_sample.name} — 2-D projection (XY)")
+                ax.set_xlabel("x")
+                ax.set_ylabel("y")
+                plt.colorbar(sc, ax=ax, label=(temp_field or "z"))
+                plt.tight_layout()
+
+                buf = io.BytesIO()
+                fig.savefig(buf, format="png", dpi=150)
+                buf.seek(0)
+                st.image(buf, use_column_width=True)
+                plt.close(fig)
+            except Exception as e2:
+                st.error(f"Fallback preview also failed: {e2}")
 
 # --------------------------------------------------------------
 # 5. Convert (optional split)
