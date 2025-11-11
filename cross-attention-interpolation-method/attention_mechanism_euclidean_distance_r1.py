@@ -13,7 +13,7 @@ import os
 import re
 import pandas as pd
 import torch.nn as nn
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, griddata
 st.set_page_config(page_title="Laser VTU Temporal Reader", layout="wide")
 st.title("🧭 Laser VTU Reader with Temporal Sequencing")
 st.markdown("**Pxx_Vyy → Time-aware .pt sequences for interpolation**")
@@ -272,18 +272,29 @@ if st.button("🔄 Convert to Temporal .pt Sequence", type="primary"):
 
         # Diffusion-like featurization: Convert to lists of np arrays, add grid if possible
         # Assume resample to fixed 3D grid (e.g., 20x20x20; adjust resolution)
-        grid_res = 20  # Example; tune based on mesh size
-        # Get bounds from initial coords
-        bounds = np.min(coords[0].numpy(), axis=0).tolist() + np.max(coords[0].numpy(), axis=0).tolist()
-        grid = pv.UniformGrid(dimensions=(grid_res, grid_res, grid_res), spacing=((bounds[3]-bounds[0])/grid_res, (bounds[4]-bounds[1])/grid_res, (bounds[5]-bounds[2])/grid_res), origin=(bounds[0], bounds[1], bounds[2]))
+        # Optimization: Tune grid_res based on n_points (cubic root * factor for density)
+        grid_factor = 1.5  # Tune: higher for finer grid
+        grid_res = int(n_points ** (1/3) * grid_factor)  # Auto-tune ~ cubic root of points
+        st.info(f"Auto-tuned grid resolution: {grid_res}^3 = {grid_res**3} points (factor={grid_factor})")
+        
+        # Get bounds from initial coords (or global min/max across time for stability)
+        global_bounds = np.min(coords.numpy().reshape(-1, 3), axis=0).tolist() + np.max(coords.numpy().reshape(-1, 3), axis=0).tolist()
+        X, Y, Z = np.meshgrid(np.linspace(global_bounds[0], global_bounds[3], grid_res), 
+                              np.linspace(global_bounds[1], global_bounds[4], grid_res), 
+                              np.linspace(global_bounds[2], global_bounds[5], grid_res), indexing='ij')
+        xi = np.stack([X.flatten(), Y.flatten(), Z.flatten()], axis=-1)  # [grid_res**3, 3]
 
-        X, Y, Z = np.meshgrid(np.linspace(bounds[0], bounds[3], grid_res), 
-                              np.linspace(bounds[1], bounds[4], grid_res), 
-                              np.linspace(bounds[2], bounds[5], grid_res), indexing='ij')
+        # Per timestep, resample fields to grid using griddata
+        # griddata details: Interpolates unstructured points to grid using Delaunay triangulation (method='linear').
+        # Alternatives: 'nearest' for speed, 'cubic' for smoothness (slower, requires scipy>1.0).
+        # If PyVista available, use mesh.interpolate for better VTK handling (radius-based, handles holes).
+        # For RBF: from scipy.interpolate import Rbf; rbf = Rbf(pts_t[:,0], pts_t[:,1], pts_t[:,2], scalar_field); interpolated = rbf(xi[:,0], xi[:,1], xi[:,2])
+        # Optimization: Parallelize over fields if large; use KDTree for nearest if interp slow.
+        interp_method = 'linear'  # Alt: 'nearest', 'cubic'
+        st.info(f"Using griddata interpolation (method='{interp_method}'): Linear triangulation for scattered points. Alts: PyVista interpolate (radius-based for meshes), RBF (smooth but slow), KDTree nearest (fast but rough).")
 
-        # Per timestep, resample fields to grid (using PyVista; assumes mesh is point cloud)
         temperature_preds = []
-        vonmises_preds = []
+        vonmises_stress_preds = []
         pressure_preds = []
         displacement_preds = []
         velocity_preds = []
@@ -292,36 +303,39 @@ if st.button("🔄 Convert to Temporal .pt Sequence", type="primary"):
         stress_components_preds = []
         strain_components_preds = []
         features_preds = []
-        coordinates_preds = []  # Gridded coords (fixed)
+        coordinates_preds = []  # Interpolated coords
 
         for t in range(n_timesteps):
-            # Create temp mesh for timestep
-            temp_mesh = pv.PolyData(coords[t].numpy())
-            temp_mesh['temperature'] = temperature[t].numpy()
-            temp_mesh['vonmises_stress'] = vonmises[t].numpy()
-            temp_mesh['pressure'] = pressure[t].numpy()
-            temp_mesh['displacement'] = displacement[t].numpy()
-            temp_mesh['velocity'] = velocity[t].numpy()
-            temp_mesh['principal_stress'] = principal_stress[t].numpy()
-            temp_mesh['principal_strain'] = principal_strain[t].numpy()
-            temp_mesh['stress_components'] = stress_components[t].numpy()
-            temp_mesh['strain_components'] = strain_components[t].numpy()
-            temp_mesh['features'] = features[t].numpy()
+            pts_t = coords[t].numpy()
             
-            # Resample to grid
-            resampled = grid.interpolate(temp_mesh, radius=0.01, sharpness=2, strategy='null_value')  # Adjust radius
+            # Scalars
+            temperature_preds.append(griddata(pts_t, temperature[t].numpy(), xi, method=interp_method).reshape((grid_res, grid_res, grid_res)))
+            vonmises_stress_preds.append(griddata(pts_t, vonmises[t].numpy(), xi, method=interp_method).reshape((grid_res, grid_res, grid_res)))
+            pressure_preds.append(griddata(pts_t, pressure[t].numpy(), xi, method=interp_method).reshape((grid_res, grid_res, grid_res)))
             
-            temperature_preds.append(resampled['temperature'])
-            vonmises_preds.append(resampled['vonmises_stress'])
-            pressure_preds.append(resampled['pressure'])
-            displacement_preds.append(resampled['displacement'])
-            velocity_preds.append(resampled['velocity'])
-            principal_stress_preds.append(resampled['principal_stress'])
-            principal_strain_preds.append(resampled['principal_strain'])
-            stress_components_preds.append(resampled['stress_components'])
-            strain_components_preds.append(resampled['strain_components'])
-            features_preds.append(resampled['features'])
-            coordinates_preds.append(resampled.points.reshape(grid_res, grid_res, grid_res, 3))  # [Nx,Ny,Nz,3]
+            # Vectors [grid_res^3, 3] -> reshape
+            disp_t = np.stack([griddata(pts_t, displacement[t, :, i].numpy(), xi, method=interp_method) for i in range(3)], axis=1).reshape((grid_res, grid_res, grid_res, 3))
+            displacement_preds.append(disp_t)
+            vel_t = np.stack([griddata(pts_t, velocity[t, :, i].numpy(), xi, method=interp_method) for i in range(3)], axis=1).reshape((grid_res, grid_res, grid_res, 3))
+            velocity_preds.append(vel_t)
+            ps_t = np.stack([griddata(pts_t, principal_stress[t, :, i].numpy(), xi, method=interp_method) for i in range(3)], axis=1).reshape((grid_res, grid_res, grid_res, 3))
+            principal_stress_preds.append(ps_t)
+            pe_t = np.stack([griddata(pts_t, principal_strain[t, :, i].numpy(), xi, method=interp_method) for i in range(3)], axis=1).reshape((grid_res, grid_res, grid_res, 3))
+            principal_strain_preds.append(pe_t)
+            
+            # Tensors [grid_res^3, 6] -> reshape
+            stress_t = np.stack([griddata(pts_t, stress_components[t, :, i].numpy(), xi, method=interp_method) for i in range(6)], axis=1).reshape((grid_res, grid_res, grid_res, 6))
+            stress_components_preds.append(stress_t)
+            strain_t = np.stack([griddata(pts_t, strain_components[t, :, i].numpy(), xi, method=interp_method) for i in range(6)], axis=1).reshape((grid_res, grid_res, grid_res, 6))
+            strain_components_preds.append(strain_t)
+            
+            # Features [grid_res^3, 27] -> reshape
+            feat_t = np.stack([griddata(pts_t, features[t, :, i].numpy(), xi, method=interp_method) for i in range(27)], axis=1).reshape((grid_res, grid_res, grid_res, 27))
+            features_preds.append(feat_t)
+            
+            # Coordinates (interpolated positions)
+            coord_t = np.stack([griddata(pts_t, pts_t[:, i], xi, method=interp_method) for i in range(3)], axis=1).reshape((grid_res, grid_res, grid_res, 3))
+            coordinates_preds.append(coord_t)
 
         # Create comprehensive output structure (diffusion-like)
         temporal_solution = {
@@ -335,17 +349,17 @@ if st.button("🔄 Convert to Temporal .pt Sequence", type="primary"):
             'Y': Y,
             'Z': Z,
             'times': times_t.numpy(),
-            'temperature_preds': temperature_preds,  # list[T] of [Nx,Ny,Nz]
-            'vonmises_stress_preds': vonmises_preds,
+            'temperature_preds': temperature_preds,  # list[T] of [grid_res, grid_res, grid_res]
+            'vonmises_stress_preds': vonmises_stress_preds,
             'pressure_preds': pressure_preds,
-            'displacement_preds': displacement_preds,  # list[T] of [Nx,Ny,Nz,3]
+            'displacement_preds': displacement_preds,  # list[T] of [grid_res, grid_res, grid_res, 3]
             'velocity_preds': velocity_preds,
             'principal_stress_preds': principal_stress_preds,
             'principal_strain_preds': principal_strain_preds,
-            'stress_components_preds': stress_components_preds,  # list[T] of [Nx,Ny,Nz,6]
+            'stress_components_preds': stress_components_preds,  # list[T] of [grid_res, grid_res, grid_res, 6]
             'strain_components_preds': strain_components_preds,
-            'features_preds': features_preds,  # list[T] of [Nx,Ny,Nz,27]
-            'coordinates_preds': coordinates_preds,  # list[T] of [Nx,Ny,Nz,3]
+            'features_preds': features_preds,  # list[T] of [grid_res, grid_res, grid_res, 27]
+            'coordinates_preds': coordinates_preds,  # list[T] of [grid_res, grid_res, grid_res, 3]
             'metadata': {  # Keep original for compatibility
                 'sim_name': sim["name"],
                 'n_timesteps': n_timesteps,
