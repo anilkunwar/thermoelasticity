@@ -1,4 +1,5 @@
 torch
-tqdm
 streamlit
-
+stpyvista
+pyvista
+vtk-osmesa  # Mesa-based VTK
