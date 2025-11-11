@@ -1,5 +1,5 @@
 # --------------------------------------------------------------
-# app.py – VTU → PT Converter (Plotly 3D + Reset Button)
+# app.py – VTU → Full PT + Cloud SQLite + Plotly 3D
 # --------------------------------------------------------------
 import os
 import re
@@ -8,185 +8,145 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+import sqlite3
 from pathlib import Path
 from tqdm import tqdm
 
 # --------------------------------------------------------------
-# 1. CONFIG
+# CONFIG
 # --------------------------------------------------------------
-st.set_page_config(page_title="VTU → PT Converter", layout="wide")
-st.title("VTU → PyTorch (.pt) Converter")
-st.markdown(
-    "Convert laser-heating `.vtu` files → ML-ready `.pt` tensors **with interactive 3-D Plotly preview**."
-)
+st.set_page_config(page_title="VTU → Full PT + SQLite", layout="wide")
+st.title("VTU → Full PyTorch (.pt) + Cloud SQLite")
+st.markdown("Convert `.vtu` → **full `.pt`** → **store in cloud SQLite** → **visualize any saved PT**")
 
 # --------------------------------------------------------------
-# RESET BUTTON (Top-right)
+# RESET BUTTON
 # --------------------------------------------------------------
-col1, col2 = st.columns([6, 1])
-with col2:
-    if st.button("Reset", help="Clear cache & reset GUI"):
-        st.cache_data.clear()
-        st.cache_resource.clear()
-        st.session_state.clear()
-        st.success("Cache & GUI reset!")
-        st.experimental_rerun()
+if st.button("Reset App", help="Clear cache & GUI"):
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.session_state.clear()
+    st.success("Reset complete!")
+    st.experimental_rerun()
 
 # --------------------------------------------------------------
-# 2. DATA_ROOT
+# 1. DATA_ROOT
 # --------------------------------------------------------------
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_FOLDER = "laser_simulations"
-
-data_folder = st.text_input(
-    "Folder with Pxx_Vyy sub-folders",
-    value=DEFAULT_FOLDER,
-    help="Leave default if the folder is next to `app.py`.",
-    key="data_folder_input"
-)
-DATA_ROOT = SCRIPT_DIR / data_folder
+DATA_ROOT = SCRIPT_DIR / "laser_simulations"
 
 if not DATA_ROOT.exists():
-    st.error(
-        f"Folder not found: `{DATA_ROOT}`\n\n"
-        "Make sure **laser_simulations** (with P10_V65, …) is next to `app.py`."
-    )
+    st.error(f"Folder not found: `{DATA_ROOT}`\n\nUpload **laser_simulations/** next to `app.py`.")
     st.stop()
+
+# --------------------------------------------------------------
+# 2. Cloud SQLite (singleton – shared across users)
+# --------------------------------------------------------------
+@st.experimental_singleton
+def get_db():
+    db_path = SCRIPT_DIR / "vtu_database.db"
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    return conn
+
+db = get_db()
+
+# Create table if not exists
+db.execute("""
+CREATE TABLE IF NOT EXISTS simulations (
+    name TEXT PRIMARY KEY,
+    P_W REAL,
+    Vscan_mm_s REAL,
+    pt_data BLOB,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+""")
+db.commit()
 
 # --------------------------------------------------------------
 # 3. Detect simulations
 # --------------------------------------------------------------
 @st.cache_data
-def find_simulations(_root):
+def find_simulations():
     pattern = re.compile(r"^P(\d+(?:\.\d+)?)_V(\d+(?:\.\d+)?)$", re.IGNORECASE)
     sims = []
-    for p in _root.iterdir():
+    for p in DATA_ROOT.iterdir():
         if p.is_dir() and pattern.match(p.name):
             vtu_files = list(p.glob("*.vtu"))
             if vtu_files:
                 P = float(pattern.match(p.name).group(1))
                 V = float(pattern.match(p.name).group(2))
-                sims.append({
-                    "name": p.name,
-                    "path": p,
-                    "P": P,
-                    "V": V,
-                    "files": len(vtu_files),
-                })
+                sims.append({"name": p.name, "path": p, "P": P, "V": V, "files": len(vtu_files)})
     return sorted(sims, key=lambda x: x["name"])
 
-simulations = find_simulations(DATA_ROOT)
+simulations = find_simulations()
 if not simulations:
-    st.warning("No `Pxx_Vyy` folders with `.vtu` files found.")
+    st.warning("No simulations found.")
     st.stop()
 
-st.success(f"Found {len(simulations)} simulations:")
-cols = st.columns(3)
-for i, sim in enumerate(simulations):
-    with cols[i % 3]:
-        st.markdown(
-            f"**{sim['name']}**  \nP = `{sim['P']}` W  \nV = `{sim['V']}` mm/s  \nFiles: `{sim['files']}`"
-        )
+st.success(f"Found {len(simulations)} simulations")
 
 # --------------------------------------------------------------
-# 4. Select & Plotly 3-D preview
+# 4. Select & Preview + Convert
 # --------------------------------------------------------------
-selected_names = st.multiselect(
-    "Select simulations to convert",
+selected = st.selectbox(
+    "Select simulation",
     options=[s["name"] for s in simulations],
-    default=[s["name"] for s in simulations[:1]],
-    key="selected_sims"
+    format_func=lambda x: f"{x} | P={next(s for s in simulations if s['name']==x)['P']}W, V={next(s for s in simulations if s['name']==x)['V']}mm/s",
+    key="select_sim"
 )
 
-if selected_names:
-    first_sim = next(s for s in simulations if s["name"] == selected_names[0])
-    vtu_sample = sorted(first_sim["path"].glob("*.vtu"))[0]
-    st.write(f"**3-D Preview**: `{vtu_sample.name}`")
+sim = next(s for s in simulations if s["name"] == selected)
+vtu_sample = sorted(sim["path"].glob("*.vtu"))[0]
 
-    @st.cache_data
-    def load_vtu_for_preview(_p):
-        import meshio
-        return meshio.read(_p)
+st.write(f"**3D Preview**: `{vtu_sample.name}`")
 
-    mesh = load_vtu_for_preview(vtu_sample)
+# Load with meshio (no VTK)
+@st.cache_data
+def load_preview(_path):
+    import meshio
+    return meshio.read(_path)
 
-    # Choose scalar field
-    temp_field = None
-    for k in mesh.point_data.keys():
-        if "temp" in k.lower() or k.lower() in ("t", "temperature"):
-            temp_field = k
-            break
-    if temp_field is None and mesh.point_data:
-        temp_field = list(mesh.point_data.keys())[0]
+mesh = load_preview(vtu_sample)
 
-    # Extract points & values
-    points = np.asarray(mesh.points)
-    if temp_field and temp_field in mesh.point_data:
-        raw = np.asarray(mesh.point_data[temp_field])
-        values = np.linalg.norm(raw, axis=1) if raw.ndim > 1 else raw
-    else:
-        values = points[:, 2]
+temp_field = next((k for k in mesh.point_data if "temp" in k.lower()), None)
+if temp_field is None and mesh.point_data:
+    temp_field = list(mesh.point_data.keys())[0]
 
-    # Down-sample if huge
-    MAX_POINTS = 200_000
-    if points.shape[0] > MAX_POINTS:
-        idx = np.random.choice(points.shape[0], MAX_POINTS, replace=False)
-        points = points[idx]
-        values = values[idx]
-        st.info(f"Down-sampled to {MAX_POINTS:,} points.")
+points = np.asarray(mesh.points)
+values = np.asarray(mesh.point_data.get(temp_field, points[:, 2]))
+if values.ndim > 1:
+    values = np.linalg.norm(values, axis=1)
 
-    # Plotly 3D scatter
-    fig = go.Figure(
-        data=go.Scatter3d(
-            x=points[:, 0],
-            y=points[:, 1],
-            z=points[:, 2],
-            mode="markers",
-            marker=dict(
-                size=2,
-                color=values,
-                colorscale="Hot",
-                colorbar=dict(title=temp_field or "Z"),
-                opacity=0.7,
-            ),
-        )
-    )
-    fig.update_layout(
-        scene=dict(xaxis_title="X", yaxis_title="Y", zaxis_title="Z", aspectmode="data"),
-        margin=dict(l=0, r=0, t=30, b=0),
-        height=600,
-    )
-    st.plotly_chart(fig, use_container_width=True, key="plotly_preview")
+if points.shape[0] > 100_000:
+    idx = np.random.choice(points.shape[0], 100_000, replace=False)
+    points = points[idx]
+    values = values[idx]
+
+fig = go.Figure(data=go.Scatter3d(
+    x=points[:, 0], y=points[:, 1], z=points[:, 2],
+    mode='markers',
+    marker=dict(size=2, color=values, colorscale='Hot', opacity=0.7)
+))
+fig.update_layout(scene=dict(aspectmode='data'), height=600)
+st.plotly_chart(fig, use_container_width=True)
 
 # --------------------------------------------------------------
-# 5. Convert + Split
+# 5. Convert & Save to SQLite
 # --------------------------------------------------------------
-split_parts = st.checkbox("Split into ≤25 MiB parts (GitHub-safe)", value=True, key="split_checkbox")
-max_mb = st.slider("Max part size (MiB)", 5, 25, 20, key="max_mb_slider") if split_parts else 200
-MAX_BYTES = max_mb * 1024 * 1024
-
-if st.button("Convert to .pt", type="primary", key="convert_btn"):
-    import pyvista as pv
-    OUTPUT_ROOT = SCRIPT_DIR / "processed_pt"
-    OUTPUT_ROOT.mkdir(exist_ok=True)
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    all_pt_files = []
-
-    for idx, name in enumerate(selected_names):
-        sim = next(s for s in simulations if s["name"] == name)
-        status_text.text(f"Processing `{name}`…")
+if st.button("Convert & Save to Cloud SQLite", type="primary"):
+    with st.spinner("Converting..."):
+        import pyvista as pv
         vtu_files = sorted(sim["path"].glob("*.vtu"))
         frames = []
 
-        for vtu_path in tqdm(vtu_files, desc=name, leave=False):
+        for vtu_path in tqdm(vtu_files, desc="Reading"):
             mesh = pv.read(vtu_path)
             time_val = mesh.field_data.get("TimeValue", [np.nan])[0]
             points = mesh.points
 
             base_data = {
-                "simulation": name,
+                "simulation": selected,
                 "P_W": sim["P"],
                 "Vscan_mm_s": sim["V"],
                 "time": time_val,
@@ -194,80 +154,72 @@ if st.button("Convert to .pt", type="primary", key="convert_btn"):
                 "y": points[:, 1],
                 "z": points[:, 2],
             }
-            for field_name in mesh.point_data:
-                arr = mesh.point_data[field_name]
+            for k, arr in mesh.point_data.items():
                 if arr.ndim == 1:
-                    base_data[field_name] = arr
+                    base_data[k] = arr
                 else:
-                    for i in range(arr.shape[1]):
-                        base_data[f"{field_name}_{i}"] = arr[:, i]
-            df = pd.DataFrame(base_data)
-            frames.append(df)
+                    for j in range(arr.shape[1]):
+                        base_data[f"{k}_{j}"] = arr[:, j]
+            frames.append(pd.DataFrame(base_data))
 
-        full_df = pd.concat(frames, ignore_index=True)
-        numeric_cols = full_df.select_dtypes(include=[np.number]).columns
-        tensors = {col: torch.from_numpy(full_df[col].values.astype(np.float32)) for col in numeric_cols}
-        metadata = {"simulation": name, "P_W": float(sim["P"]), "Vscan_mm_s": float(sim["V"])}
+        df = pd.concat(frames, ignore_index=True)
+        tensors = {c: torch.from_numpy(df[c].values.astype(np.float32)) for c in df.select_dtypes(include=[np.number]).columns}
+        metadata = {"simulation": selected, "P_W": float(sim["P"]), "Vscan_mm_s": float(sim["V"])}
+        full_pt = {**tensors, **metadata}
 
-        N = next(iter(tensors.values())).shape[0]
-        row_bytes = sum(t[0:1].numel() * 4 for t in tensors.values())
-        rows_per_part = max(1, MAX_BYTES // row_bytes)
-        n_parts = (N + rows_per_part - 1) // rows_per_part
+        # Save to SQLite as BLOB
+        pt_bytes = io.BytesIO()
+        torch.save(full_pt, pt_bytes)
+        pt_bytes.seek(0)
 
-        sim_dir = OUTPUT_ROOT / name
-        sim_dir.mkdir(exist_ok=True)
+        db.execute(
+            "INSERT OR REPLACE INTO simulations (name, P_W, Vscan_mm_s, pt_data) VALUES (?, ?, ?, ?)",
+            (selected, sim["P"], sim["V"], pt_bytes.read())
+        )
+        db.commit()
 
-        for i in range(n_parts):
-            start = i * rows_per_part
-            end = min(start + rows_per_part, N)
-            part = {k: v[start:end] for k, v in tensors.items()}
-            part.update(metadata)
-            part["part_index"] = i
-            part["total_parts"] = n_parts
-            part_file = sim_dir / f"part_{i:04d}.pt"
-            torch.save(part, part_file)
-            all_pt_files.append(part_file)
-
-        progress_bar.progress((idx + 1) / len(selected_names))
-
-    status_text.success(f"Converted {len(selected_names)} simulation(s)!")
+    st.success(f"Saved `{selected}.pt` to cloud SQLite!")
     st.balloons()
 
-    # Download
-    st.subheader("Download .pt Files")
-    for pt_file in all_pt_files:
-        size_mb = pt_file.stat().st_size / (1024 * 1024)
-        with open(pt_file, "rb") as f:
-            st.download_button(
-                label=f"{pt_file.relative_to(OUTPUT_ROOT)} ({size_mb:.1f} MB)",
-                data=f,
-                file_name=pt_file.name,
-                mime="application/octet-stream",
-                key=f"dl_{pt_file.name}"
-            )
-    st.info(f"All files saved in: `{OUTPUT_ROOT}`")
+# --------------------------------------------------------------
+# 6. Load & Visualize from SQLite
+# --------------------------------------------------------------
+st.subheader("Load & Visualize Saved PT from SQLite")
+
+saved_sims = db.execute("SELECT name FROM simulations").fetchall()
+saved_names = [row[0] for row in saved_sims]
+
+if saved_names:
+    load_name = st.selectbox("Select saved simulation", saved_names, key="load_select")
+    if st.button("Load from SQLite"):
+        row = db.execute("SELECT pt_data FROM simulations WHERE name = ?", (load_name,)).fetchone()
+        pt_bytes = io.BytesIO(row[0])
+        data = torch.load(pt_bytes)
+
+        st.write(f"Loaded `{load_name}` – {data['Temperature'].shape[0]:,} points")
+
+        # 3D Plotly
+        points = np.stack([data["x"], data["y"], data["z"]], axis=1).numpy()
+        values = data.get("Temperature", data["z"]).numpy()
+
+        fig = go.Figure(data=go.Scatter3d(
+            x=points[:, 0], y=points[:, 1], z=points[:, 2],
+            mode='markers',
+            marker=dict(size=2, color=values, colorscale='Hot', opacity=0.7)
+        ))
+        fig.update_layout(scene=dict(aspectmode='data'), height=600)
+        st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("No simulations saved yet.")
 
 # --------------------------------------------------------------
-# 7. Reconstruction helper
+# 7. Download from SQLite
 # --------------------------------------------------------------
-with st.expander("Re-assemble a full .pt from parts"):
-    st.code(
-        """
-import torch, glob, os
-def load_simulation(folder):
-    parts = sorted(glob.glob(os.path.join(folder, "part_*.pt")))
-    tensors = {}
-    meta = None
-    for p in parts:
-        d = torch.load(p)
-        if meta is None:
-            meta = {k: v for k, v in d.items() if not isinstance(v, torch.Tensor)}
-        for k, v in d.items():
-            if isinstance(v, torch.Tensor):
-                tensors.setdefault(k, []).append(v)
-    full = {k: torch.cat(v) for k, v in tensors.items()}
-    full.update(meta)
-    return full
-        """,
-        language="python",
+if saved_names and load_name:
+    row = db.execute("SELECT pt_data FROM simulations WHERE name = ?", (load_name,)).fetchone()
+    st.download_button(
+        label=f"Download {load_name}.pt",
+        data=row[0],
+        file_name=f"{load_name}.pt",
+        mime="application/octet-stream"
     )
