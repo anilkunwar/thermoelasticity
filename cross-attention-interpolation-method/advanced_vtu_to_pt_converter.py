@@ -270,7 +270,7 @@ if st.button("Convert to .pt", type="primary"):
         }
 
         # ---------- Split ----------
-        N = next(iter(tensors.values())).shape[0)
+        N = next(iter(tensors.values())).shape[0]
         row_bytes = sum(t[0:1].numel() * 4 for t in tensors.values())
         rows_per_part = max(1, MAX_BYTES // row_bytes)
         n_parts = (N + rows_per_part - 1) // rows_per_part
