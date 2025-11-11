@@ -1,5 +1,5 @@
 # --------------------------------------------------------------
-# app.py – VTU → PT Converter (GitHub Cloud, os.path.join)
+# app.py – VTU → PT Converter (Relative Path, os.path.join)
 # --------------------------------------------------------------
 import streamlit as st
 import pandas as pd
@@ -10,89 +10,34 @@ import panel as pn
 import glob
 import re
 import os
-import zipfile
-import io
-import requests
 from pathlib import Path
 from tqdm import tqdm
 
 # --------------------------------------------------------------
 # CONFIG
 # --------------------------------------------------------------
-st.set_page_config(page_title="VTU → PT Converter (GitHub)", layout="wide")
-st.title("VTU to PyTorch (.pt) Converter – GitHub Cloud")
-st.markdown(
-    """
-    The app **downloads** the `laser_simulations/` folder from a GitHub repository,
-    converts the `.vtu` files to `.pt` tensors and lets you download the results.
-    """
-)
+st.set_page_config(page_title="VTU → PT Converter", layout="wide")
+st.title("VTU to PyTorch (.pt) Converter")
+st.markdown("Convert `.vtu` → `.pt` with **3D preview** – **local folder only**.")
 
 # --------------------------------------------------------------
-# 1. GitHub repo input
+# 1. Define DATA_ROOT using os.path.join + __file__
 # --------------------------------------------------------------
-repo_input = st.text_input(
-    "GitHub repository (owner/repo)",
-    value="your-username/your-repo",   # <-- change to your repo
-    help="e.g. curiosity/laser-heating"
-)
-branch = st.text_input("Branch / Tag", value="main")
-subfolder = st.text_input(
-    "Folder inside repo (optional)",
-    value="laser_simulations",
-    help="Leave empty if the folder is at the repo root"
-)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_ROOT = os.path.join(SCRIPT_DIR, "laser_simulations")
 
-# Build raw GitHub URL for the folder (zip download)
-raw_zip_url = f"https://github.com/{repo_input}/archive/{branch}.zip"
-st.caption(f"Will download: `{raw_zip_url}`")
-
-# --------------------------------------------------------------
-# 2. Download & extract the folder
-# --------------------------------------------------------------
-@st.cache_resource(show_spinner="Downloading repository…")
-def download_and_extract():
-    resp = requests.get(raw_zip_url, stream=True)
-    resp.raise_for_status()
-    zip_bytes = io.BytesIO(resp.content)
-
-    with zipfile.ZipFile(zip_bytes) as z:
-        # repo root inside zip is <repo>-<branch>/
-        repo_root = z.namelist()[0].split("/")[0]
-        # extract only the wanted sub-folder
-        target_prefix = os.path.join(repo_root, subfolder).replace("\\", "/")
-        files = [n for n in z.namelist() if n.startswith(target_prefix)]
-        extracted = {}
-        for name in files:
-            rel = os.path.relpath(name, target_prefix)
-            if rel == ".":
-                continue
-            data = z.read(name)
-            extracted[rel] = data
-    return extracted, target_prefix
-
-try:
-    extracted_files, _ = download_and_extract()
-except Exception as e:
-    st.error(f"Failed to download repo: {e}")
+if not os.path.exists(DATA_ROOT):
+    st.error(
+        f"Folder not found: `{DATA_ROOT}`\n\n"
+        "Make sure:\n"
+        "1. `laser_simulations/` is in the **same folder** as `app.py`\n"
+        "2. It contains subfolders like `P10_V65/`, `P35_V65/`, etc.\n"
+        "3. Each subfolder has `.vtu` files"
+    )
     st.stop()
 
-# Write extracted files to a temporary folder (Streamlit cache)
-TMP_ROOT = Path("/tmp/github_vtu")
-TMP_ROOT.mkdir(parents=True, exist_ok=True)
-
-DATA_ROOT = TMP_ROOT / "laser_simulations"
-DATA_ROOT.mkdir(exist_ok=True)
-
-for rel_path, content in extracted_files.items():
-    full_path = DATA_ROOT / rel_path
-    full_path.parent.mkdir(parents=True, exist_ok=True)
-    full_path.write_bytes(content)
-
-st.success(f"Downloaded & extracted `{subfolder}` → `{DATA_ROOT}`")
-
 # --------------------------------------------------------------
-# 3. Detect simulations (same logic, now uses os.path.join)
+# 2. Detect simulations
 # --------------------------------------------------------------
 def find_simulations(root):
     pattern = re.compile(r"^P(\d+(?:\.\d+)?)_V(\d+(?:\.\d+)?)$", re.IGNORECASE)
@@ -103,18 +48,16 @@ def find_simulations(root):
             if vtu_files:
                 P = float(pattern.match(entry.name).group(1))
                 V = float(pattern.match(entry.name).group(2))
-                sims.append(
-                    {
-                        "name": entry.name,
-                        "path": Path(entry.path),
-                        "P": P,
-                        "V": V,
-                        "files": len(vtu_files),
-                    }
-                )
+                sims.append({
+                    "name": entry.name,
+                    "path": entry.path,
+                    "P": P,
+                    "V": V,
+                    "files": len(vtu_files),
+                })
     return sorted(sims, key=lambda x: x["name"])
 
-simulations = find_simulations(str(DATA_ROOT))
+simulations = find_simulations(DATA_ROOT)
 
 if not simulations:
     st.warning("No `Pxx_Vyy` folders with `.vtu` files found.")
@@ -129,18 +72,18 @@ for i, sim in enumerate(simulations):
         )
 
 # --------------------------------------------------------------
-# 4. Select & 3-D preview
+# 3. Select & 3D Preview
 # --------------------------------------------------------------
 selected_names = st.multiselect(
     "Select simulations to convert",
     options=[s["name"] for s in simulations],
-    default=[s["name"] for s in simulations[:1]],
+    default=[s["name"] for s in simulations[:1]]
 )
 
 if selected_names:
     first_sim = next(s for s in simulations if s["name"] == selected_names[0])
-    vtu_sample = sorted(first_sim["path"].glob("*.vtu"))[0]
-    st.write(f"**3-D Preview**: `{vtu_sample.name}`")
+    vtu_sample = sorted(glob.glob(os.path.join(first_sim["path"], "*.vtu")))[0]
+    st.write(f"**3D Preview**: `{os.path.basename(vtu_sample)}`")
 
     @st.cache_data
     def load_preview_mesh(p):
@@ -148,11 +91,11 @@ if selected_names:
 
     mesh = load_preview_mesh(vtu_sample)
 
-    # pick a temperature-like field
+    # Find temperature field
     temp_field = None
-    for k in mesh.point_data.keys():
-        if "temp" in k.lower() or k.lower() in ("t", "temperature"):
-            temp_field = k
+    for key in mesh.point_data.keys():
+        if "temp" in key.lower() or key.lower() in ("t", "temperature"):
+            temp_field = key
             break
     if temp_field is None and mesh.point_data:
         temp_field = list(mesh.point_data.keys())[0]
@@ -160,26 +103,34 @@ if selected_names:
     plotter = pv.Plotter(off_screen=True)
     plotter.add_mesh(mesh, scalars=temp_field, cmap="hot", show_scalar_bar=True)
     plotter.set_background("white")
-    plotter.camera_position = "xy"
+    plotter.camera_position = 'xy'
     png = plotter.screenshot(transparent_background=True, return_img=True)
     st.image(png, use_column_width=True)
 
 # --------------------------------------------------------------
-# 5. Convert button
+# 4. Optional: Split to ≤25 MiB
+# --------------------------------------------------------------
+split_parts = st.checkbox("Split .pt into ≤25 MiB parts (GitHub-safe)", value=True)
+max_mb = st.slider("Max size per part (MiB)", 5, 25, 20) if split_parts else 25
+MAX_BYTES = max_mb * 1024 * 1024
+
+# --------------------------------------------------------------
+# 5. Convert Button
 # --------------------------------------------------------------
 if st.button("Convert to .pt", type="primary"):
-    OUTPUT_DIR = Path("processed_pt")
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_ROOT = Path(os.path.join(SCRIPT_DIR, "processed_pt"))
+    OUTPUT_ROOT.mkdir(exist_ok=True)
 
     progress_bar = st.progress(0)
     status_text = st.empty()
-    results = []
+    all_download_files = []
 
     for idx, name in enumerate(selected_names):
         sim = next(s for s in simulations if s["name"] == name)
-        status_text.text(f"Processing `{name}`…")
+        status_text.text(f"Processing `{name}`...")
 
-        vtu_files = sorted(sim["path"].glob("*.vtu"))
+        # --- Load all .vtu ---
+        vtu_files = sorted(glob.glob(os.path.join(sim["path"], "*.vtu")))
         frames = []
 
         for vtu_path in tqdm(vtu_files, desc=name, leave=False):
@@ -196,7 +147,6 @@ if st.button("Convert to .pt", type="primary"):
                 "y": points[:, 1],
                 "z": points[:, 2],
             }
-
             for field_name in mesh.point_data:
                 arr = mesh.point_data[field_name]
                 if arr.ndim == 1:
@@ -204,43 +154,104 @@ if st.button("Convert to .pt", type="primary"):
                 else:
                     for i in range(arr.shape[1]):
                         base_data[f"{field_name}_{i}"] = arr[:, i]
-
             df = pd.DataFrame(base_data)
             frames.append(df)
 
         full_df = pd.concat(frames, ignore_index=True)
-
         numeric_cols = full_df.select_dtypes(include=[np.number]).columns
-        tensor_dict = {
-            col: torch.from_numpy(full_df[col].values.astype(np.float32))
-            for col in numeric_cols
-        }
-        metadata = {
-            "simulation": name,
-            "P_W": float(sim["P"]),
-            "Vscan_mm_s": float(sim["V"]),
-        }
-        save_data = {**tensor_dict, **metadata}
+        tensors = {col: torch.from_numpy(full_df[col].values.astype(np.float32)) for col in numeric_cols}
+        metadata = {"simulation": name, "P_W": float(sim["P"]), "Vscan_mm_s": float(sim["V"])}
 
-        pt_path = OUTPUT_DIR / f"{name}.pt"
-        torch.save(save_data, pt_path)
-        results.append(pt_path)
+        # --- Split into parts ---
+        N = next(iter(tensors.values())).shape[0]
+        row_bytes = sum(t[0:1].numel() * 4 for t in tensors.values())
+        rows_per_part = max(1, MAX_BYTES // row_bytes)
+        n_parts = (N + rows_per_part - 1) // rows_per_part
+
+        sim_out_dir = OUTPUT_ROOT / name
+        sim_out_dir.mkdir(exist_ok=True)
+
+        for i in range(n_parts):
+            start = i * rows_per_part
+            end = min(start + rows_per_part, N)
+
+            part_tensors = {k: v[start:end] for k, v in tensors.items()}
+            part_data = {**part_tensors, **metadata,
+                         "part_index": i, "total_parts": n_parts,
+                         "row_start": start, "row_end": end}
+
+            part_file = sim_out_dir / f"part_{i:04d}.pt"
+            torch.save(part_data, part_file)
+            all_download_files.append(part_file)
 
         progress_bar.progress((idx + 1) / len(selected_names))
 
-    status_text.success(f"Converted {len(results)} simulation(s)!")
+    status_text.success(f"Converted & split {len(selected_names)} simulation(s)!")
     st.balloons()
 
     # --------------------------------------------------------------
-    # 6. Download results
+    # 6. Download All Parts
     # --------------------------------------------------------------
-    st.subheader("Download .pt Files")
-    for pt_file in results:
-        with open(pt_file, "rb") as f:
-            st.download_button(
-                label=f"{pt_file.name} ({pt_file.stat().st_size/1e6:.1f} MB)",
-                data=f,
-                file_name=pt_file.name,
-                mime="application/octet-stream",
-            )
-    st.info(f"All `.pt` files saved in: `{OUTPUT_DIR}`")
+    st.subheader("Download Split .pt Files (≤25 MiB each)")
+    total_parts = len(all_download_files)
+    total_size_gb = sum(f.stat().st_size for f in all_download_files) / (1024**3)
+    st.write(f"**{total_parts} parts** | **{total_size_gb:.2f} GB total**")
+
+    for part_path in all_download_files:
+        size_mb = part_path.stat().st_size / (1024**2)
+        rel_path = part_path.relative_to(OUTPUT_ROOT)
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.write(f"`{rel_path}` — **{size_mb:.2f} MiB**")
+        with col2:
+            with open(part_path, "rb") as f:
+                st.download_button(
+                    label="Download",
+                    data=f,
+                    file_name=part_path.name,
+                    mime="application/octet-stream",
+                    key=str(part_path)
+                )
+
+    st.info(
+        f"All files saved in: `{OUTPUT_ROOT}`\n\n"
+        "Upload the **entire folder** to GitHub — **no LFS needed**!"
+    )
+
+# --------------------------------------------------------------
+# 7. Reconstruction Code
+# --------------------------------------------------------------
+with st.expander("Reconstruct Full .pt from Parts"):
+    st.code("""
+import torch, glob, os
+from pathlib import Path
+
+def load_simulation(folder):
+    parts = sorted(glob.glob(os.path.join(folder, "part_*.pt")))
+    tensors = {}
+    meta = None
+    for p in parts:
+        d = torch.load(p)
+        if meta is None:
+            meta = {k: v for k, v in d.items() if not isinstance(v, torch.Tensor)}
+        for k, v in d.items():
+            if isinstance(v, torch.Tensor):
+                tensors.setdefault(k, []).append(v)
+    full = {k: torch.cat(v) for k, v in tensors.items()}
+    full.update(meta)
+    return full
+
+# Example
+data = load_simulation("processed_pt/P10_V65")
+print(data["Temperature"].shape)
+    """)
+
+# --------------------------------------------------------------
+# 8. GitHub Upload Tip
+# --------------------------------------------------------------
+st.markdown("""
+### Upload to GitHub (No LFS)
+```bash
+git add processed_pt/
+git commit -m "Add split .pt parts (≤25 MiB)"
+git push
