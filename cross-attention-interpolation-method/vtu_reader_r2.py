@@ -13,25 +13,21 @@ st.title("VTU File Reader")
 # 2. DATA_ROOT – relative to this script
 # --------------------------------------------------------------
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
-DATA_ROOT = "laser_simulations"
+DEFAULT_FOLDER = "laser_simulations"
 
+data_folder = st.text_input(
+    "Folder with Pxx_Vyy sub-folders",
+    value=DEFAULT_FOLDER,
+    help="Leave default if the folder is next to `app.py`."
+)
+
+DATA_ROOT = SCRIPT_DIR / data_folder
 if not DATA_ROOT.exists():
-    st.error("laser_simulations directory not found. Please ensure it's available.")
-    st.stop()
-
-# Find PXX_VYY folders
-def find_folders(root):
-    pattern = re.compile(r"^P(\d+)_V(\d+)$")
-    folders = []
-    for p in root.iterdir():
-        if p.is_dir() and pattern.match(p.name):
-            folders.append(p.name)
-    return sorted(folders)
-
-folders = find_folders(DATA_ROOT)
-
-if not folders:
-    st.warning("No PXX_VYY folders found.")
+    st.error(
+        f"Folder not found: `{DATA_ROOT}`\n\n"
+        "Make sure the folder **laser_simulations** (containing P10_V65, …) "
+        "is in the **same directory** as `app.py`."
+    )
     st.stop()
 
 # Select folder
