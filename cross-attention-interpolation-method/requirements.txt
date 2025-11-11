@@ -1,5 +1,7 @@
-torch
 streamlit
-stpyvista
-pyvista
-vtk-osmesa  # Mesa-based VTK
+plotly
+meshio
+torch
+pandas
+numpy
+tqdm
