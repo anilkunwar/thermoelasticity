@@ -1,9 +1,9 @@
 streamlit
-plotly
+pyvista
+vtk
 meshio
+plotly
 torch
 pandas
 numpy
 tqdm
-pyvista==0.42.0
-vtk==9.2.6
