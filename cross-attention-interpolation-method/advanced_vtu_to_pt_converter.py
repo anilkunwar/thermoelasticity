@@ -1,47 +1,37 @@
 # --------------------------------------------------------------
-# app.py – VTU → PT Converter (Streamlit Cloud + Local)
+# app.py – GUI .vtu → .pt Converter (Streamlit + 3D Preview)
 # --------------------------------------------------------------
 import os
+import streamlit as st
+import pandas as pd
+import numpy as np
+import torch
 import re
 import glob
-import io
-import torch
-import numpy as np
-import pandas as pd
-import streamlit as st
-import matplotlib.pyplot as plt
 from pathlib import Path
 from tqdm import tqdm
 
 # ==============================================================
-# 1. HEADLESS RENDERING – MUST BE BEFORE ANY PYVISTA IMPORT
+# 1. HEADLESS RENDERING – MUST BE BEFORE pyvista import!
 # ==============================================================
 os.environ["PYVISTA_OFF_SCREEN"] = "True"
-os.environ["PYVISTA_USE_PANEL"] = "True"
 os.environ["PYVISTA_AUTO_CLOSE"] = "False"
-os.environ["VTK_DEFAULT_RENDER_WINDOW_OFFSCREEN"] = "True"
-os.environ["VTK_USE_OFFSCREEN"] = "True"
+os.environ["PYVISTA_USE_PANEL"] = "True"
 os.environ["MESA_GL_VERSION_OVERRIDE"] = "3.3"
 os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
 
-# Start a virtual framebuffer (Xvfb) – works on Streamlit Cloud
+import pyvista as pv
 try:
-    import pyvista as pv
     pv.start_xvfb()
-    st.toast("Xvfb virtual display started.")
-except Exception as e:
-    st.warning(f"Xvfb not available – falling back to pure off-screen mode ({e})")
-    import pyvista as pv
-    pv.OFF_SCREEN = True
+except:
+    pass
 
 # --------------------------------------------------------------
 # CONFIG
 # --------------------------------------------------------------
 st.set_page_config(page_title="VTU → PT Converter", layout="wide")
-st.title("VTU → PyTorch (.pt) Converter")
-st.markdown(
-    "Convert laser-heating `.vtu` files → ML-ready `.pt` tensors **with 3-D preview**."
-)
+st.title("VTU to PyTorch (.pt) Converter")
+st.markdown("Convert laser heating `.vtu` files → ML-ready `.pt` tensors with **3D preview**.")
 
 # --------------------------------------------------------------
 # 2. DATA_ROOT – relative to this script
