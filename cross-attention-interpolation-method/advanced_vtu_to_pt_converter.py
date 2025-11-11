@@ -12,15 +12,31 @@ from pathlib import Path
 from tqdm import tqdm
 
 # ==============================================================
-# 1. HEADLESS RENDERING SETUP (must be BEFORE importing pyvista)
+# 1. HEADLESS RENDERING CONFIGURATION (Streamlit Cloud safe)
 # ==============================================================
+import os
+
+# Disable OpenGL (Streamlit Cloud has no display or GPU)
 os.environ["PYVISTA_OFF_SCREEN"] = "True"
 os.environ["PYVISTA_USE_PANEL"] = "True"
 os.environ["PYVISTA_AUTO_CLOSE"] = "False"
-os.environ["MESA_GL_VERSION_OVERRIDE"] = "3.3"
-os.environ["PYVISTA_GLOBAL_THEME"] = "document"
 
-import pyvista as pv  # import after env vars
+# Force OSMesa software rendering backend instead of OpenGL2
+os.environ["VTK_DEFAULT_RENDER_WINDOW_OFFSCREEN"] = "True"
+os.environ["VTK_USE_OFFSCREEN"] = "True"
+os.environ["PYVISTA_BUILD_TYPE"] = "headless"
+os.environ["MESA_GL_VERSION_OVERRIDE"] = "3.3"
+os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+
+# Optional (prevents VTK trying to load OpenGL)
+os.environ["PYVISTA_DISABLE_FOONATHAN_MEMORY"] = "1"
+
+import pyvista as pv
+
+# No Xvfb or OpenGL initialization — just pure off-screen
+pv.OFF_SCREEN = True
+print("[INFO] Running in fully headless OSMesa mode.")
+
 
 # Try to start virtual display (if available)
 try:
