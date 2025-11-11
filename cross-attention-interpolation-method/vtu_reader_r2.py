@@ -13,7 +13,7 @@ st.title("VTU File Reader")
 # 2. DATA_ROOT – relative to this script
 # --------------------------------------------------------------
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_FOLDER = "laser_simulations"
+DATA_ROOT = "laser_simulations"
 
 if not DATA_ROOT.exists():
     st.error("laser_simulations directory not found. Please ensure it's available.")
