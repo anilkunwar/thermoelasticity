@@ -3,6 +3,7 @@ import pyvista as pv
 import numpy as np
 from pathlib import Path
 import plotly.graph_objects as go
+import os
 
 st.title("VTU File Reader")
 
