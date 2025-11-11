@@ -31,7 +31,7 @@ if not DATA_ROOT.exists():
     st.stop()
 
 # Select folder
-selected_folder = st.selectbox("Select PXX_VYY folder", folders)
+selected_folder = st.selectbox("Select PXX_VYY folder", data_folder)
 
 if selected_folder:
     folder_path = DATA_ROOT / selected_folder
