@@ -1,8 +1,9 @@
 # --------------------------------------------------------------
-# app.py – VTU → Full PT + Cloud SQLite + Plotly 3D
+# app.py – VTU → Full PT + Cloud SQLite + Plotly 3D (2025 FIX)
 # --------------------------------------------------------------
 import os
 import re
+import io
 import torch
 import numpy as np
 import pandas as pd
@@ -20,14 +21,16 @@ st.title("VTU → Full PyTorch (.pt) + Cloud SQLite")
 st.markdown("Convert `.vtu` → **full `.pt`** → **store in cloud SQLite** → **visualize any saved PT**")
 
 # --------------------------------------------------------------
-# RESET BUTTON
+# RESET BUTTON (FIXED – uses st.rerun())
 # --------------------------------------------------------------
-if st.button("Reset App", help="Clear cache & GUI"):
-    st.cache_data.clear()
-    st.cache_resource.clear()
-    st.session_state.clear()
-    st.success("Reset complete!")
-    st.experimental_rerun()
+col1, col2 = st.columns([6, 1])
+with col2:
+    if st.button("Reset", help="Clear cache & reset GUI", key="reset_btn"):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.session_state.clear()
+        st.success("Cache & GUI reset!")
+        st.rerun()  # ← FIXED: was st.experimental_rerun()
 
 # --------------------------------------------------------------
 # 1. DATA_ROOT
@@ -40,7 +43,7 @@ if not DATA_ROOT.exists():
     st.stop()
 
 # --------------------------------------------------------------
-# 2. Cloud SQLite (singleton – shared across users)
+# 2. Cloud SQLite (persistent across deployments)
 # --------------------------------------------------------------
 @st.experimental_singleton
 def get_db():
@@ -51,7 +54,6 @@ def get_db():
 
 db = get_db()
 
-# Create table if not exists
 db.execute("""
 CREATE TABLE IF NOT EXISTS simulations (
     name TEXT PRIMARY KEY,
@@ -87,7 +89,7 @@ if not simulations:
 st.success(f"Found {len(simulations)} simulations")
 
 # --------------------------------------------------------------
-# 4. Select & Preview + Convert
+# 4. Select & Preview
 # --------------------------------------------------------------
 selected = st.selectbox(
     "Select simulation",
@@ -98,10 +100,8 @@ selected = st.selectbox(
 
 sim = next(s for s in simulations if s["name"] == selected)
 vtu_sample = sorted(sim["path"].glob("*.vtu"))[0]
-
 st.write(f"**3D Preview**: `{vtu_sample.name}`")
 
-# Load with meshio (no VTK)
 @st.cache_data
 def load_preview(_path):
     import meshio
@@ -109,10 +109,7 @@ def load_preview(_path):
 
 mesh = load_preview(vtu_sample)
 
-temp_field = next((k for k in mesh.point_data if "temp" in k.lower()), None)
-if temp_field is None and mesh.point_data:
-    temp_field = list(mesh.point_data.keys())[0]
-
+temp_field = next((k for k in mesh.point_data if "temp" in k.lower()), None) or list(mesh.point_data.keys())[0] if mesh.point_data else None
 points = np.asarray(mesh.points)
 values = np.asarray(mesh.point_data.get(temp_field, points[:, 2]))
 if values.ndim > 1:
@@ -128,19 +125,19 @@ fig = go.Figure(data=go.Scatter3d(
     mode='markers',
     marker=dict(size=2, color=values, colorscale='Hot', opacity=0.7)
 ))
-fig.update_layout(scene=dict(aspectmode='data'), height=600)
+fig.update_layout(scene=dict(aspectmode='data'), height=600, margin=dict(l=0,r=0,t=0,b=0))
 st.plotly_chart(fig, use_container_width=True)
 
 # --------------------------------------------------------------
 # 5. Convert & Save to SQLite
 # --------------------------------------------------------------
-if st.button("Convert & Save to Cloud SQLite", type="primary"):
-    with st.spinner("Converting..."):
+if st.button("Convert & Save to Cloud SQLite", type="primary", key="convert_btn"):
+    with st.spinner("Converting to full .pt and saving..."):
         import pyvista as pv
         vtu_files = sorted(sim["path"].glob("*.vtu"))
         frames = []
 
-        for vtu_path in tqdm(vtu_files, desc="Reading"):
+        for vtu_path in tqdm(vtu_files, desc="Reading VTUs"):
             mesh = pv.read(vtu_path)
             time_val = mesh.field_data.get("TimeValue", [np.nan])[0]
             points = mesh.points
@@ -167,59 +164,62 @@ if st.button("Convert & Save to Cloud SQLite", type="primary"):
         metadata = {"simulation": selected, "P_W": float(sim["P"]), "Vscan_mm_s": float(sim["V"])}
         full_pt = {**tensors, **metadata}
 
-        # Save to SQLite as BLOB
-        pt_bytes = io.BytesIO()
-        torch.save(full_pt, pt_bytes)
-        pt_bytes.seek(0)
+        # Serialize to bytes
+        buffer = io.BytesIO()
+        torch.save(full_pt, buffer)
+        buffer.seek(0)
 
+        # Save to SQLite
         db.execute(
             "INSERT OR REPLACE INTO simulations (name, P_W, Vscan_mm_s, pt_data) VALUES (?, ?, ?, ?)",
-            (selected, sim["P"], sim["V"], pt_bytes.read())
+            (selected, sim["P"], sim["V"], buffer.read())
         )
         db.commit()
 
-    st.success(f"Saved `{selected}.pt` to cloud SQLite!")
+    st.success(f"**{selected}.pt** saved to cloud SQLite!")
     st.balloons()
 
 # --------------------------------------------------------------
 # 6. Load & Visualize from SQLite
 # --------------------------------------------------------------
-st.subheader("Load & Visualize Saved PT from SQLite")
+st.subheader("Load Saved Simulations")
+saved = db.execute("SELECT name, P_W, Vscan_mm_s, timestamp FROM simulations ORDER BY timestamp DESC").fetchall()
 
-saved_sims = db.execute("SELECT name FROM simulations").fetchall()
-saved_names = [row[0] for row in saved_sims]
+if saved:
+    df_saved = pd.DataFrame(saved, columns=["Name", "P (W)", "V (mm/s)", "Saved At"])
+    st.dataframe(df_saved)
 
-if saved_names:
-    load_name = st.selectbox("Select saved simulation", saved_names, key="load_select")
-    if st.button("Load from SQLite"):
+    load_name = st.selectbox("Select to load", options=[row[0] for row in saved], key="load_select")
+    
+    if st.button("Load & Visualize", key="load_btn"):
         row = db.execute("SELECT pt_data FROM simulations WHERE name = ?", (load_name,)).fetchone()
-        pt_bytes = io.BytesIO(row[0])
-        data = torch.load(pt_bytes)
+        data = torch.load(io.BytesIO(row[0]))
 
-        st.write(f"Loaded `{load_name}` – {data['Temperature'].shape[0]:,} points")
+        st.write(f"Loaded `{load_name}` – {data['x'].shape[0]:,} points")
 
-        # 3D Plotly
         points = np.stack([data["x"], data["y"], data["z"]], axis=1).numpy()
-        values = data.get("Temperature", data["z"]).numpy()
+        temp = data.get("Temperature", data.get("temp", data["z"])).numpy()
 
         fig = go.Figure(data=go.Scatter3d(
             x=points[:, 0], y=points[:, 1], z=points[:, 2],
             mode='markers',
-            marker=dict(size=2, color=values, colorscale='Hot', opacity=0.7)
+            marker=dict(size=2, color=temp, colorscale='Hot', opacity=0.7)
         ))
         fig.update_layout(scene=dict(aspectmode='data'), height=600)
         st.plotly_chart(fig, use_container_width=True)
+
+        # Download button
+        st.download_button(
+            label=f"Download {load_name}.pt",
+            data=row[0],
+            file_name=f"{load_name}.pt",
+            mime="application/octet-stream"
+        )
 else:
-    st.info("No simulations saved yet.")
+    st.info("No saved simulations yet. Convert one first!")
 
 # --------------------------------------------------------------
-# 7. Download from SQLite
+# Done!
 # --------------------------------------------------------------
-if saved_names and load_name:
-    row = db.execute("SELECT pt_data FROM simulations WHERE name = ?", (load_name,)).fetchone()
-    st.download_button(
-        label=f"Download {load_name}.pt",
-        data=row[0],
-        file_name=f"{load_name}.pt",
-        mime="application/octet-stream"
-    )
+st.markdown("---")
+st.caption("Streamlit Cloud + SQLite + Full .pt – November 2025 Ready")
